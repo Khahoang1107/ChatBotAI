@@ -1,0 +1,57 @@
+version: "3.1"
+
+rules:
+  - rule: Say goodbye anytime the user says goodbye
+    steps:
+      - intent: goodbye
+      - action: utter_goodbye
+
+  - rule: Say 'I am a bot' anytime the user challenges
+    steps:
+      - intent: bot_challenge
+      - action: utter_iamabot
+
+  - rule: Always greet when user says hi
+    steps:
+      - intent: greet
+      - action: utter_greet
+
+  - rule: Activate fallback when confidence is low
+    steps:
+      - intent: nlu_fallback
+      - action: utter_default
+
+  - rule: Handle invoice help request
+    steps:
+      - intent: ask_invoice_help
+      - action: utter_invoice_help
+
+  - rule: Handle template creation request
+    steps:
+      - intent: create_invoice_template
+      - action: utter_template_help
+
+  - rule: Handle OCR help request
+    steps:
+      - intent: request_ocr_help
+      - action: utter_ocr_help
+
+  - rule: Handle search help request
+    steps:
+      - intent: search_invoice
+      - action: utter_search_help
+
+  - rule: Handle invoice format question
+    steps:
+      - intent: ask_invoice_format
+      - action: utter_template_help
+
+  - rule: Handle affirm after help
+    steps:
+      - intent: affirm
+      - action: utter_happy
+
+  - rule: Handle deny after help
+    steps:
+      - intent: deny
+      - action: utter_did_that_help

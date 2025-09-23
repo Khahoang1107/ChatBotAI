@@ -1,0 +1,5 @@
+rasa==3.6.0
+rasa-sdk==3.6.0
+spacy>=3.4.0,<3.8
+requests>=2.25.0
+python-multipart>=0.0.5

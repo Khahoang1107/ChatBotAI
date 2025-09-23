@@ -5,12 +5,26 @@ from typing import Dict, List, Any
 from config import Config
 from models.ai_model import AIModel
 from utils.text_processor import TextProcessor
+from utils.training_client import TrainingDataClient, InvoicePatternMatcher
+import logging
+
+logger = logging.getLogger(__name__)
 
 class ChatHandler:
     def __init__(self):
         self.ai_model = AIModel()
         self.text_processor = TextProcessor()
         self.conversation_history = {}
+        
+        # Khởi tạo training client để lấy dữ liệu học từ templates
+        self.training_client = TrainingDataClient()
+        self.pattern_matcher = InvoicePatternMatcher(self.training_client)
+        
+        # Kiểm tra kết nối với backend training data
+        if self.training_client.check_health():
+            logger.info("Kết nối thành công với training data backend")
+        else:
+            logger.warning("Không thể kết nối với training data backend")
         
         # Patterns cho nhận diện intent
         self.patterns = {
@@ -24,6 +38,18 @@ class ChatHandler:
                 r'(mã số thuế|tax code)',
                 r'(thanh toán|payment)',
                 r'(VAT|thuế giá trị gia tăng)'
+            ],
+            'invoice_analysis': [
+                r'(phân tích|analyze|extract)',
+                r'(đọc hóa đơn|read invoice)',
+                r'(nhận dạng|recognize|identify)',
+                r'(thông tin hóa đơn|invoice information)'
+            ],
+            'template_help': [
+                r'(mẫu hóa đơn|template)',
+                r'(tạo mẫu|create template)',
+                r'(loại mẫu|template type)',
+                r'(field|trường thông tin)'
             ],
             'help': [
                 r'(giúp|help|hỗ trợ|support)',
@@ -75,6 +101,10 @@ class ChatHandler:
             return self.handle_greeting()
         elif intent == 'invoice_query':
             return self.handle_invoice_query(message, context)
+        elif intent == 'invoice_analysis':
+            return self.handle_invoice_analysis(message, context)
+        elif intent == 'template_help':
+            return self.handle_template_help(message, context)
         elif intent == 'help':
             return self.handle_help_request()
         elif intent == 'goodbye':
@@ -232,5 +262,172 @@ Bạn cần hỗ trợ gì hôm nay?
             'total_users': total_users,
             'total_messages': total_messages,
             'active_conversations': total_users,
-            'uptime': datetime.now().isoformat()
+            'uptime': datetime.now().isoformat(),
+            'training_data_status': 'connected' if self.training_client.check_health() else 'disconnected'
         }
+    
+    def handle_invoice_analysis(self, message: str, context: Dict) -> Dict[str, Any]:
+        """Xử lý phân tích hóa đơn sử dụng training data"""
+        try:
+            # Extract thông tin từ message sử dụng patterns đã học
+            extracted_info = self.pattern_matcher.extract_invoice_info(message)
+            
+            if not extracted_info:
+                return {
+                    'message': '🔍 Tôi không tìm thấy thông tin hóa đơn rõ ràng trong tin nhắn của bạn.\n\n'
+                              'Vui lòng cung cấp thêm thông tin như:\n'
+                              '• Số hóa đơn\n'
+                              '• Ngày hóa đơn\n'
+                              '• Tên công ty\n'
+                              '• Số tiền\n'
+                              '• Mã số thuế',
+                    'type': 'text',
+                    'suggestions': [
+                        'Gửi ảnh hóa đơn',
+                        'Nhập thông tin chi tiết',
+                        'Hướng dẫn sử dụng',
+                        'Liên hệ hỗ trợ'
+                    ]
+                }
+            
+            # Format kết quả
+            response_parts = ['🎯 **Thông tin hóa đơn đã nhận dạng:**\n']
+            
+            for field_name, info in extracted_info.items():
+                best_match = info.get('best_match')
+                confidence = info.get('confidence', 0.0)
+                
+                if best_match and confidence > 0.3:  # Chỉ hiển thị nếu độ tin cậy > 30%
+                    confidence_icon = '🟢' if confidence > 0.7 else '🟡' if confidence > 0.5 else '🔴'
+                    field_display_name = self._get_field_display_name(field_name)
+                    
+                    response_parts.append(
+                        f'{confidence_icon} **{field_display_name}**: {best_match} '
+                        f'(Độ tin cậy: {confidence:.0%})'
+                    )
+            
+            # Gợi ý loại template
+            suggested_type = self.pattern_matcher.suggest_template_type(extracted_info)
+            if suggested_type != 'unknown':
+                response_parts.append(f'\n💡 **Loại mẫu gợi ý**: {suggested_type.upper()}')
+            
+            # Thống kê training data
+            stats = self.training_client.get_statistics()
+            if stats:
+                total_records = stats.get('total_records', 0)
+                response_parts.append(f'\n📊 Dựa trên {total_records} mẫu hóa đơn đã học')
+            
+            return {
+                'message': '\n'.join(response_parts),
+                'type': 'markdown',
+                'extracted_data': extracted_info,
+                'suggestions': [
+                    'Tạo hóa đơn từ thông tin này',
+                    'Kiểm tra thông tin khác',
+                    'Xuất file Excel',
+                    'Lưu vào hệ thống'
+                ]
+            }
+            
+        except Exception as e:
+            logger.error(f"Lỗi khi phân tích hóa đơn: {str(e)}")
+            return {
+                'message': '❌ Có lỗi xảy ra khi phân tích hóa đơn. Vui lòng thử lại sau.',
+                'type': 'text',
+                'suggestions': ['Thử lại', 'Liên hệ hỗ trợ']
+            }
+    
+    def handle_template_help(self, message: str, context: Dict) -> Dict[str, Any]:
+        """Xử lý trợ giúp về templates dựa trên training data"""
+        try:
+            # Lấy thống kê về templates
+            stats = self.training_client.get_statistics()
+            
+            if not stats:
+                return {
+                    'message': '📋 **Hỗ trợ về mẫu hóa đơn**\n\n'
+                              'Tôi có thể giúp bạn tạo và quản lý các mẫu hóa đơn. '
+                              'Tuy nhiên, hiện tại không thể kết nối với dữ liệu mẫu.',
+                    'type': 'markdown',
+                    'suggestions': ['Thử lại', 'Liên hệ hỗ trợ']
+                }
+            
+            response_parts = ['📋 **Thống kê mẫu hóa đơn trong hệ thống:**\n']
+            
+            # Hiển thị thống kê theo loại
+            by_type = stats.get('by_type', {})
+            total_records = stats.get('total_records', 0)
+            
+            response_parts.append(f'📊 **Tổng số mẫu**: {total_records}')
+            
+            if by_type:
+                response_parts.append('\n**Phân loại theo định dạng:**')
+                for template_type, type_stats in by_type.items():
+                    count = type_stats.get('count', 0)
+                    avg_fields = type_stats.get('avg_fields', 0)
+                    response_parts.append(
+                        f'• **{template_type.upper()}**: {count} mẫu '
+                        f'(TB {avg_fields} trường thông tin)'
+                    )
+            
+            # Gợi ý field phổ biến
+            common_fields = self.pattern_matcher.common_fields[:10]
+            if common_fields:
+                response_parts.append('\n**🏷️ Trường thông tin phổ biến:**')
+                for field in common_fields:
+                    display_name = self._get_field_display_name(field)
+                    response_parts.append(f'• {display_name}')
+            
+            return {
+                'message': '\n'.join(response_parts),
+                'type': 'markdown',
+                'training_stats': stats,
+                'suggestions': [
+                    'Tạo mẫu mới',
+                    'Xem danh sách mẫu',
+                    'Hướng dẫn tạo mẫu',
+                    'Nhập mẫu từ file'
+                ]
+            }
+            
+        except Exception as e:
+            logger.error(f"Lỗi khi xử lý template help: {str(e)}")
+            return {
+                'message': '❌ Có lỗi xảy ra khi truy xuất thông tin mẫu. Vui lòng thử lại sau.',
+                'type': 'text',
+                'suggestions': ['Thử lại', 'Liên hệ hỗ trợ']
+            }
+    
+    def _get_field_display_name(self, field_name: str) -> str:
+        """Chuyển đổi field name thành tên hiển thị tiếng Việt"""
+        display_names = {
+            'invoice_number': 'Số hóa đơn',
+            'invoice_date': 'Ngày hóa đơn',
+            'due_date': 'Hạn thanh toán',
+            'company_name': 'Tên công ty',
+            'company_address': 'Địa chỉ công ty',
+            'tax_code': 'Mã số thuế',
+            'customer_name': 'Tên khách hàng',
+            'customer_address': 'Địa chỉ khách hàng',
+            'customer_phone': 'Điện thoại khách hàng',
+            'subtotal': 'Tiền hàng',
+            'tax_amount': 'Tiền thuế',
+            'total_amount': 'Tổng tiền',
+            'amount': 'Số tiền',
+            'description': 'Mô tả',
+            'quantity': 'Số lượng',
+            'unit_price': 'Đơn giá',
+            'currency': 'Đơn vị tiền tệ'
+        }
+        
+        return display_names.get(field_name, field_name.replace('_', ' ').title())
+    
+    def refresh_training_data(self):
+        """Refresh training data từ backend"""
+        try:
+            self.pattern_matcher.refresh_patterns()
+            logger.info("Đã refresh training data thành công")
+            return True
+        except Exception as e:
+            logger.error(f"Lỗi khi refresh training data: {str(e)}")
+            return False

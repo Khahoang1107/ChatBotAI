@@ -1,0 +1,121 @@
+version: "3.1"
+
+intents:
+  - greet
+  - goodbye
+  - affirm
+  - deny
+  - mood_great
+  - mood_unhappy
+  - bot_challenge
+  - ask_invoice_help
+  - create_invoice_template
+  - extract_invoice_data
+  - search_invoice
+  - upload_invoice
+  - ask_invoice_format
+  - ask_template_types
+  - request_ocr_help
+
+entities:
+  - invoice_number
+  - company_name
+  - customer_name
+  - amount
+  - date
+  - template_name
+  - file_type
+
+slots:
+  invoice_number:
+    type: text
+    influence_conversation: true
+    mappings:
+      - type: from_entity
+        entity: invoice_number
+
+  company_name:
+    type: text
+    influence_conversation: true
+    mappings:
+      - type: from_entity
+        entity: company_name
+
+  customer_name:
+    type: text
+    influence_conversation: true
+    mappings:
+      - type: from_entity
+        entity: customer_name
+
+  amount:
+    type: text
+    influence_conversation: true
+    mappings:
+      - type: from_entity
+        entity: amount
+
+  date:
+    type: text
+    influence_conversation: true
+    mappings:
+      - type: from_entity
+        entity: date
+
+  template_name:
+    type: text
+    influence_conversation: true
+    mappings:
+      - type: from_entity
+        entity: template_name
+
+  file_type:
+    type: text
+    influence_conversation: true
+    mappings:
+      - type: from_entity
+        entity: file_type
+
+responses:
+  utter_greet:
+    - text: "Xin chào! Tôi là trợ lý AI hỗ trợ xử lý hóa đơn. Tôi có thể giúp bạn tạo mẫu hóa đơn, trích xuất dữ liệu từ hình ảnh, hoặc tìm kiếm thông tin hóa đơn. Bạn cần hỗ trợ gì?"
+    - text: "Chào bạn! Tôi có thể giúp bạn với các công việc liên quan đến hóa đơn như tạo mẫu, OCR, và tìm kiếm dữ liệu. Bạn muốn làm gì?"
+
+  utter_goodbye:
+    - text: "Tạm biệt! Hẹn gặp lại bạn lần sau."
+    - text: "Chúc bạn một ngày tốt lành! Nếu cần hỗ trợ thêm về hóa đơn, hãy quay lại nhé."
+
+  utter_iamabot:
+    - text: "Tôi là chatbot AI chuyên hỗ trợ xử lý hóa đơn điện tử và OCR."
+
+  utter_happy:
+    - text: "Tuyệt vời! Tôi rất vui khi có thể giúp đỡ bạn."
+    - text: "Rất tốt! Bạn có cần hỗ trợ thêm gì khác không?"
+
+  utter_cheer_up:
+    - text: "Đừng lo lắng! Tôi sẽ cố gắng hỗ trợ bạn tốt nhất có thể."
+    - text: "Mọi việc sẽ ổn thôi. Hãy để tôi giúp bạn xử lý vấn đề về hóa đơn nhé."
+
+  utter_did_that_help:
+    - text: "Tôi có giúp được bạn không?"
+    - text: "Thông tin này có hữu ích cho bạn không?"
+
+  utter_invoice_help:
+    - text: "Tôi có thể hỗ trợ bạn với các công việc sau:\n1. Tạo mẫu hóa đơn\n2. Trích xuất dữ liệu từ hình ảnh hóa đơn (OCR)\n3. Tìm kiếm thông tin hóa đơn\n4. Hướng dẫn sử dụng hệ thống\n\nBạn cần hỗ trợ gì cụ thể?"
+
+  utter_template_help:
+    - text: "Để tạo mẫu hóa đơn, bạn có thể:\n1. Sử dụng chức năng 'Tạo mẫu hóa đơn' trên giao diện\n2. Nhập thông tin công ty và định dạng mong muốn\n3. Hệ thống sẽ lưu mẫu để sử dụng cho OCR\n\nBạn có muốn tôi hướng dẫn chi tiết không?"
+
+  utter_ocr_help:
+    - text: "Để sử dụng OCR (nhận dạng ký tự quang học):\n1. Chụp ảnh hoặc tải lên hình ảnh hóa đơn\n2. Chọn mẫu hóa đơn phù hợp (nếu có)\n3. Hệ thống sẽ tự động trích xuất thông tin\n4. Bạn có thể kiểm tra và chỉnh sửa kết quả\n\nBạn có hình ảnh hóa đơn nào cần xử lý không?"
+
+  utter_search_help:
+    - text: "Để tìm kiếm hóa đơn, bạn có thể tìm theo:\n- Số hóa đơn\n- Tên công ty\n- Tên khách hàng\n- Ngày lập hóa đơn\n- Số tiền\n\nBạn muốn tìm kiếm theo tiêu chí nào?"
+
+  utter_default:
+    - text: "Xin lỗi, tôi chưa hiểu rõ ý bạn. Bạn có thể nói rõ hơn về vấn đề liên quan đến hóa đơn mà bạn cần hỗ trợ không?"
+    - text: "Tôi chưa hiểu câu hỏi của bạn. Bạn có thể hỏi về tạo mẫu hóa đơn, OCR, hoặc tìm kiếm dữ liệu không?"
+
+session_config:
+  session_expiration_time: 60
+  carry_over_slots_to_new_session: true
