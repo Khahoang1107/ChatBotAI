@@ -1,6 +1,6 @@
 """
-OCR Service for processing invoice images and extracting structured data.
-Supports both generic OCR and template-based extraction.
+Enhanced OCR Service with AI-powered invoice recognition.
+Supports traditional OCR + AI field extraction + template matching.
 """
 
 import os
@@ -13,16 +13,76 @@ import pytesseract
 import openai
 from pdf2image import convert_from_path
 
+# Import AI training service
+try:
+    from .ai_training_service import InvoiceAITrainer
+    AI_AVAILABLE = True
+except ImportError:
+    AI_AVAILABLE = False
+    print("AI training service not available. Using traditional OCR only.")
 
-class OCRService:
+
+class EnhancedOCRService:
     def __init__(self):
-        """Initialize OCR Service with OpenAI API key"""
+        """Initialize Enhanced OCR Service with AI capabilities"""
         self.openai_client = None
         if os.environ.get('OPENAI_API_KEY'):
             openai.api_key = os.environ.get('OPENAI_API_KEY')
             self.openai_client = openai
+        
+        # Initialize AI trainer if available
+        self.ai_trainer = None
+        if AI_AVAILABLE:
+            try:
+                self.ai_trainer = InvoiceAITrainer()
+                print("AI-powered invoice recognition enabled")
+            except Exception as e:
+                print(f"Failed to initialize AI trainer: {e}")
+                self.ai_trainer = None
     
-    def process_image(self, file_path: str, template=None, confidence_threshold: float = 0.8) -> Dict[str, Any]:
+    def process_image_with_ai(self, file_path: str, template=None, use_ai: bool = True) -> Dict[str, Any]:
+        """
+        Process an image file with AI-enhanced invoice recognition
+        
+        Args:
+            file_path: Path to the image file
+            template: Optional template for guided extraction
+            use_ai: Whether to use AI enhancement (fallback to traditional OCR)
+        
+        Returns:
+            Enhanced OCR results with AI predictions and confidence scores
+        """
+        # Start with traditional OCR
+        traditional_result = self.process_image_traditional(file_path, template)
+        
+        # Enhance with AI if available and requested
+        if use_ai and self.ai_trainer and traditional_result.get('extracted_text'):
+            try:
+                ai_result = self.ai_trainer.predict_invoice_fields(
+                    traditional_result['extracted_text']
+                )
+                
+                # Merge traditional and AI results
+                enhanced_result = self._merge_ocr_and_ai_results(
+                    traditional_result, ai_result
+                )
+                
+                enhanced_result['ai_enhanced'] = True
+                enhanced_result['processing_method'] = 'ai_enhanced'
+                
+                return enhanced_result
+                
+            except Exception as e:
+                print(f"AI enhancement failed: {e}")
+                # Fallback to traditional result
+                traditional_result['ai_enhanced'] = False
+                traditional_result['ai_error'] = str(e)
+                
+        traditional_result['ai_enhanced'] = False
+        traditional_result['processing_method'] = 'traditional_ocr'
+        return traditional_result
+    
+    def process_image_traditional(self, file_path: str, template=None, confidence_threshold: float = 0.8) -> Dict[str, Any]:
         """
         Process an image file and extract invoice data
         

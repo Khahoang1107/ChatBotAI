@@ -5,41 +5,50 @@ from config import Config
 
 class AIModel:
     def __init__(self):
-        openai.api_key = Config.OPENAI_API_KEY
-        self.model = Config.DEFAULT_MODEL
-        self.max_tokens = Config.MAX_TOKENS
-        self.temperature = Config.TEMPERATURE
+        self.client = openai.OpenAI(api_key=Config.OPENAI_API_KEY)
+        self.model = getattr(Config, 'DEFAULT_MODEL', 'gpt-3.5-turbo')
+        self.max_tokens = getattr(Config, 'MAX_TOKENS', 1000)
+        self.temperature = getattr(Config, 'TEMPERATURE', 0.7)
         
         # System prompts cho các loại câu hỏi khác nhau
         self.system_prompts = {
             'invoice': """
 Bạn là trợ lý AI chuyên về hóa đơn và thuế tại Việt Nam.
-Nhiệm vụ: Trả lời các câu hỏi về hóa đơn, thuế VAT, quy định pháp luật.
-Phong cách: Chuyên nghiệp, thân thiện, cung cấp thông tin chính xác.
+Nhiệm vụ: Trả lời các câu hỏi về hóa đơn, thuế VAT, quy định pháp luật một cách chính xác và hữu ích.
+Phong cách: Chuyên nghiệp, thân thiện, cung cấp thông tin chi tiết.
 Ngôn ngữ: Tiếng Việt.
 
 Kiến thức chuyên môn:
-- Luật thuế Việt Nam
+- Luật thuế Việt Nam hiện hành
 - Quy định về hóa đơn điện tử
-- Cách tính thuế VAT
-- Báo cáo thuế
-- Kế toán doanh nghiệp
+- Cách tính thuế VAT (0%, 5%, 10%)
+- Báo cáo thuế và kế toán
+- Mã số thuế và các thủ tục thuế
+- Quy trình tạo và quản lý hóa đơn
+
+Luôn cung cấp thông tin cụ thể và thực tế.
             """,
             'general': """
-Bạn là trợ lý AI thân thiện và hữu ích.
-Nhiệm vụ: Trả lời các câu hỏi chung, hỗ trợ người dùng.
+Bạn là trợ lý AI thân thiện và hữu ích cho hệ thống quản lý hóa đơn.
+Nhiệm vụ: Trả lời câu hỏi, hướng dẫn sử dụng hệ thống, hỗ trợ người dùng.
 Phong cách: Thân thiện, nhiệt tình, tích cực.
 Ngôn ngữ: Tiếng Việt.
 
-Nếu không biết câu trả lời, hãy thành thật nói không biết và đề xuất cách khác để hỗ trợ.
+Khả năng hỗ trợ:
+- Hướng dẫn sử dụng các tính năng
+- Giải thích về quản lý hóa đơn
+- Hỗ trợ kỹ thuật cơ bản
+- Trả lời các câu hỏi chung
+
+Nếu không biết câu trả lời chính xác, hãy thành thật nói không biết và đề xuất cách khác để hỗ trợ.
             """
         }
     
-    def generate_invoice_response(self, message: str, context: Dict) -> str:
+    def generate_invoice_response(self, message: str, context: Dict = None) -> str:
         """Tạo phản hồi cho câu hỏi về hóa đơn"""
         try:
             # Lấy lịch sử hội thoại để có context
-            conversation_history = self._format_conversation_history(context)
+            conversation_history = self._format_conversation_history(context or {})
             
             messages = [
                 {"role": "system", "content": self.system_prompts['invoice']},
@@ -47,7 +56,7 @@ Nếu không biết câu trả lời, hãy thành thật nói không biết và 
                 {"role": "user", "content": message}
             ]
             
-            response = openai.ChatCompletion.create(
+            response = self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
                 max_tokens=self.max_tokens,
@@ -57,18 +66,32 @@ Nếu không biết câu trả lời, hãy thành thật nói không biết và 
             return response.choices[0].message.content.strip()
             
         except Exception as e:
+            print(f"OpenAI API Error: {e}")
             return self._get_fallback_invoice_response(message)
     
-    def generate_general_response(self, message: str, context: Dict) -> str:
+    def generate_general_response(self, message: str, context: Dict = None) -> str:
         """Tạo phản hồi cho câu hỏi chung"""
         try:
-            conversation_history = self._format_conversation_history(context)
+            conversation_history = self._format_conversation_history(context or {})
             
             messages = [
                 {"role": "system", "content": self.system_prompts['general']},
                 *conversation_history,
                 {"role": "user", "content": message}
             ]
+            
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                max_tokens=self.max_tokens,
+                temperature=self.temperature
+            )
+            
+            return response.choices[0].message.content.strip()
+            
+        except Exception as e:
+            print(f"OpenAI API Error: {e}")
+            return self._get_fallback_general_response(message)
             
             response = openai.ChatCompletion.create(
                 model=self.model,

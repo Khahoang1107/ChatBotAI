@@ -24,15 +24,22 @@ migrate = Migrate(app, db)
 from models import user, invoice, template, ocr_result
 
 # Import routes
-from routes import auth, invoices, templates, ocr, analytics, ai_training
+from routes import auth, invoices, templates, ocr, analytics, ai_training, hybrid_chat
+from routes.ocr_async import ocr_async_bp
+
+# Initialize Celery for Event-Driven processing
+from celery_config import make_celery
+celery = make_celery(app)
 
 # Register blueprints
 app.register_blueprint(auth.bp, url_prefix='/api/auth')
 app.register_blueprint(invoices.bp, url_prefix='/api/invoices')
 app.register_blueprint(templates.bp, url_prefix='/api/templates')
 app.register_blueprint(ocr.bp, url_prefix='/api/ocr')
+app.register_blueprint(ocr_async_bp, url_prefix='/api/ocr-async')  # 🚀 Event-Driven OCR
 app.register_blueprint(analytics.bp, url_prefix='/api/analytics')
 app.register_blueprint(ai_training.ai_training_bp, url_prefix='/api/ai-training')
+app.register_blueprint(hybrid_chat.hybrid_chat_bp, url_prefix='/api/hybrid-chat')
 
 # Health check endpoint
 @app.route('/api/health')

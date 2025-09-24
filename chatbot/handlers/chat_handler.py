@@ -1,7 +1,9 @@
 import random
 import re
+import requests
+import os
 from datetime import datetime
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 from config import Config
 from models.ai_model import AIModel
 from utils.text_processor import TextProcessor
@@ -16,6 +18,10 @@ class ChatHandler:
         self.text_processor = TextProcessor()
         self.conversation_history = {}
         
+        # Rasa integration
+        self.rasa_url = os.getenv('RASA_URL', 'http://rasa:5005')  # Từ environment
+        self.use_rasa = True  # Flag để bật/tắt Rasa
+        
         # Khởi tạo training client để lấy dữ liệu học từ templates
         self.training_client = TrainingDataClient()
         self.pattern_matcher = InvoicePatternMatcher(self.training_client)
@@ -25,6 +31,13 @@ class ChatHandler:
             logger.info("Kết nối thành công với training data backend")
         else:
             logger.warning("Không thể kết nối với training data backend")
+        
+        # Kiểm tra kết nối Rasa
+        if self.check_rasa_connection():
+            logger.info("Kết nối thành công với Rasa")
+        else:
+            logger.warning("Không thể kết nối với Rasa - fallback to patterns")
+            self.use_rasa = False
         
         # Patterns cho nhận diện intent
         self.patterns = {
@@ -48,54 +61,74 @@ class ChatHandler:
             'template_help': [
                 r'(mẫu hóa đơn|template)',
                 r'(tạo mẫu|create template)',
-                r'(loại mẫu|template type)',
-                r'(field|trường thông tin)'
+                r'(thiết kế hóa đơn|design invoice)'
             ],
             'help': [
-                r'(giúp|help|hỗ trợ|support)',
-                r'(làm thế nào|how to|cách)',
-                r'(có thể|can you|bạn có thể)'
+                r'(help|hỗ trợ|giúp đỡ)',
+                r'(hướng dẫn|guide|instruction)',
+                r'(làm sao|how to|cách)'
             ],
             'goodbye': [
                 r'(tạm biệt|goodbye|bye|see you)',
                 r'(cảm ơn|thank you|thanks)',
-                r'(kết thúc|end|quit)'
+                r'(kết thúc|end|finish)'
             ]
         }
-    
-    def process_message(self, message: str, user_id: str) -> Dict[str, Any]:
-        """Xử lý tin nhắn từ user"""
+
+    def process_message(self, message: str, user_id: str = 'anonymous') -> Dict[str, Any]:
+        """Xử lý tin nhắn từ user với Rasa integration"""
+        logger.info(f"Processing message from {user_id}: {message}")
         
-        # Normalize text
-        processed_message = self.text_processor.normalize(message)
+        # Nếu Rasa available, dùng Rasa trước
+        if self.use_rasa:
+            try:
+                rasa_response = self.query_rasa(message, user_id)
+                if rasa_response and self.is_good_rasa_response(rasa_response):
+                    # Rasa đã xử lý tốt
+                    response = self.format_rasa_response(rasa_response)
+                    self.update_conversation_history(user_id, message, response)
+                    return response
+            except Exception as e:
+                logger.warning(f"Rasa query failed: {e}, falling back to patterns")
         
-        # Detect intent
-        intent = self.detect_intent(processed_message)
-        
-        # Get conversation context
-        context = self.get_conversation_context(user_id)
-        
-        # Generate response based on intent
-        response = self.generate_response(intent, processed_message, context)
-        
-        # Update conversation history
-        self.update_conversation_history(user_id, message, response)
-        
-        return response
+        # Fallback to original pattern-based logic
+        try:
+            # Lấy context cuộc hội thoại
+            context = self.get_conversation_context(user_id)
+            
+            # Nhận diện intent
+            intent = self.detect_intent(message)
+            
+            # Xử lý theo intent
+            response = self.handle_intent(intent, message, context)
+            
+            # Cập nhật lịch sử hội thoại
+            self.update_conversation_history(user_id, message, response)
+            
+            return response
+            
+        except Exception as e:
+            logger.error(f"Error processing message: {str(e)}")
+            return {
+                'message': 'Xin lỗi, đã có lỗi xảy ra. Vui lòng thử lại.',
+                'type': 'text',
+                'suggestions': ['Hỗ trợ kỹ thuật', 'Thử lại', 'Liên hệ admin'],
+                'timestamp': datetime.now().isoformat()
+            }
     
     def detect_intent(self, message: str) -> str:
-        """Nhận diện ý định của user"""
-        message_lower = message.lower()
+        """Phát hiện intent từ tin nhắn"""
+        message_clean = self.text_processor.clean_text(message.lower())
         
         for intent, patterns in self.patterns.items():
             for pattern in patterns:
-                if re.search(pattern, message_lower):
+                if re.search(pattern, message_clean, re.IGNORECASE):
                     return intent
         
         return 'general'
     
-    def generate_response(self, intent: str, message: str, context: Dict) -> Dict[str, Any]:
-        """Tạo phản hồi dựa trên intent"""
+    def handle_intent(self, intent: str, message: str, context: Dict) -> Dict[str, Any]:
+        """Xử lý intent và trả về response"""
         
         if intent == 'greeting':
             return self.handle_greeting()
@@ -114,9 +147,13 @@ class ChatHandler:
     
     def handle_greeting(self) -> Dict[str, Any]:
         """Xử lý lời chào"""
-        greeting = random.choice(Config.GREETING_MESSAGES).format(
-            bot_name=Config.BOT_NAME
-        )
+        greeting_messages = [
+            f"Xin chào! Tôi là {Config.BOT_NAME}, trợ lý AI chuyên về hóa đơn. Tôi có thể giúp gì cho bạn?",
+            f"Chào bạn! Rất vui được hỗ trợ bạn về các vấn đề hóa đơn và thuế hôm nay!",
+            f"Hello! Tôi là {Config.BOT_NAME}, sẵn sàng hỗ trợ bạn mọi thắc mắc về hóa đơn."
+        ]
+        
+        greeting = random.choice(greeting_messages)
         
         return {
             'message': greeting,
@@ -130,7 +167,7 @@ class ChatHandler:
         }
     
     def handle_invoice_query(self, message: str, context: Dict) -> Dict[str, Any]:
-        """Xử lý câu hỏi về hóa đơn"""
+        """Xử lý câu hỏi về hóa đơn bằng AI"""
         
         # Sử dụng AI để phân tích và trả lời
         ai_response = self.ai_model.generate_invoice_response(message, context)
@@ -143,6 +180,38 @@ class ChatHandler:
                 'Tìm kiếm hóa đơn',
                 'Xuất báo cáo',
                 'Hỗ trợ khác'
+            ]
+        }
+    
+    def handle_invoice_analysis(self, message: str, context: Dict) -> Dict[str, Any]:
+        """Xử lý yêu cầu phân tích hóa đơn"""
+        
+        ai_response = self.ai_model.generate_invoice_response(message, context)
+        
+        return {
+            'message': ai_response,
+            'type': 'text',
+            'suggestions': [
+                'Upload file hóa đơn',
+                'Hướng dẫn OCR',
+                'Xem template có sẵn',
+                'Tạo template mới'
+            ]
+        }
+    
+    def handle_template_help(self, message: str, context: Dict) -> Dict[str, Any]:
+        """Xử lý câu hỏi về template"""
+        
+        ai_response = self.ai_model.generate_invoice_response(message, context)
+        
+        return {
+            'message': ai_response,
+            'type': 'text',
+            'suggestions': [
+                'Xem danh sách template',
+                'Tạo template mới',
+                'Sửa template hiện có',
+                'Hướng dẫn thiết kế'
             ]
         }
     
@@ -192,34 +261,47 @@ Bạn cần hỗ trợ gì hôm nay?
         }
     
     def handle_general_query(self, message: str, context: Dict) -> Dict[str, Any]:
-        """Xử lý câu hỏi chung"""
+        """Xử lý câu hỏi chung bằng AI"""
         
-        # Sử dụng AI để trả lời
-        ai_response = self.ai_model.generate_general_response(message, context)
+        # Phân loại câu hỏi có liên quan đến hóa đơn không
+        if self._is_invoice_related(message):
+            ai_response = self.ai_model.generate_invoice_response(message, context)
+            suggestions = [
+                'Tạo hóa đơn mới',
+                'Tìm kiếm hóa đơn',
+                'Xem báo cáo thuế',
+                'Hướng dẫn OCR'
+            ]
+        else:
+            ai_response = self.ai_model.generate_general_response(message, context)
+            suggestions = [
+                'Hướng dẫn sử dụng hệ thống',
+                'Tính năng nào có sẵn?',
+                'Cách tạo hóa đơn',
+                'Hỗ trợ kỹ thuật'
+            ]
         
+        # Fallback nếu AI không hoạt động
         if not ai_response:
-            error_message = random.choice(Config.ERROR_MESSAGES)
-            return {
-                'message': error_message,
-                'type': 'text',
-                'suggestions': [
-                    'Hỏi về hóa đơn',
-                    'Cần hỗ trợ',
-                    'Hướng dẫn sử dụng',
-                    'Liên hệ admin'
-                ]
-            }
+            ai_response = "Xin lỗi, tôi đang gặp sự cố kỹ thuật. Bạn có thể thử hỏi lại hoặc liên hệ bộ phận hỗ trợ."
         
         return {
             'message': ai_response,
             'type': 'text',
-            'suggestions': [
-                'Tiếp tục hỏi',
-                'Cần hỗ trợ khác',
-                'Kết thúc',
-                'Đánh giá dịch vụ'
-            ]
+            'suggestions': suggestions
         }
+    
+    def _is_invoice_related(self, message: str) -> bool:
+        """Kiểm tra câu hỏi có liên quan đến hóa đơn không"""
+        invoice_keywords = [
+            'hóa đơn', 'invoice', 'bill', 'thuế', 'tax', 'vat',
+            'thanh toán', 'payment', 'mã số thuế', 'tax code',
+            'xuất hóa đơn', 'tạo hóa đơn', 'in hóa đơn',
+            'báo cáo thuế', 'khai thuế', 'thuế gtgt'
+        ]
+        
+        message_lower = message.lower()
+        return any(keyword in message_lower for keyword in invoice_keywords)
     
     def get_conversation_context(self, user_id: str) -> Dict:
         """Lấy ngữ cảnh cuộc hội thoại"""
@@ -250,184 +332,116 @@ Bạn cần hỗ trợ gì hôm nay?
             self.conversation_history[user_id]['messages'] = \
                 self.conversation_history[user_id]['messages'][-50:]
     
-    def get_statistics(self) -> Dict[str, Any]:
-        """Lấy thống kê chatbot"""
-        total_users = len(self.conversation_history)
-        total_messages = sum(
-            len(history['messages']) 
-            for history in self.conversation_history.values()
-        )
+    # === RASA INTEGRATION METHODS ===
+    
+    def check_rasa_connection(self) -> bool:
+        """Kiểm tra kết nối với Rasa"""
+        try:
+            response = requests.get(f"{self.rasa_url}/status", timeout=5)
+            return response.status_code == 200
+        except Exception as e:
+            logger.error(f"Cannot connect to Rasa: {e}")
+            return False
+    
+    def query_rasa(self, message: str, user_id: str) -> Optional[Dict[str, Any]]:
+        """Gửi tin nhắn tới Rasa"""
+        try:
+            # 1. Webhook để lấy response
+            webhook_payload = {"sender": user_id, "message": message}
+            webhook_response = requests.post(
+                f"{self.rasa_url}/webhooks/rest/webhook",
+                json=webhook_payload,
+                timeout=10
+            )
+            
+            # 2. Parse để lấy intent/entities
+            parse_payload = {"text": message}
+            parse_response = requests.post(
+                f"{self.rasa_url}/model/parse",
+                json=parse_payload,
+                timeout=10
+            )
+            
+            if webhook_response.status_code == 200 and parse_response.status_code == 200:
+                webhook_data = webhook_response.json()
+                parse_data = parse_response.json()
+                
+                return {
+                    'responses': webhook_data,
+                    'intent': parse_data.get('intent', {}),
+                    'entities': parse_data.get('entities', []),
+                    'success': True
+                }
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Rasa query error: {e}")
+            return None
+    
+    def is_good_rasa_response(self, rasa_result: Dict[str, Any]) -> bool:
+        """Kiểm tra chất lượng response từ Rasa"""
+        if not rasa_result.get('success'):
+            return False
+            
+        responses = rasa_result.get('responses', [])
+        if not responses:
+            return False
+            
+        # Kiểm tra confidence
+        intent = rasa_result.get('intent', {})
+        confidence = intent.get('confidence', 0.0)
+        
+        if confidence < 0.3:  # Confidence quá thấp
+            return False
+            
+        # Kiểm tra response content
+        response_text = responses[0].get('text', '').lower()
+        bad_patterns = [
+            "xin lỗi, tôi không hiểu",
+            "tôi không biết",
+            "utter_default",
+            "sorry"
+        ]
+        
+        for bad_pattern in bad_patterns:
+            if bad_pattern in response_text:
+                return False
+        
+        return True
+    
+    def format_rasa_response(self, rasa_result: Dict[str, Any]) -> Dict[str, Any]:
+        """Format response từ Rasa thành format chuẩn"""
+        responses = rasa_result.get('responses', [])
+        intent = rasa_result.get('intent', {})
+        entities = rasa_result.get('entities', [])
+        
+        main_response = responses[0].get('text', '') if responses else 'Cảm ơn bạn!'
+        
+        # Tạo suggestions dựa trên intent
+        intent_name = intent.get('name', 'unknown')
+        suggestions = self.get_rasa_suggestions(intent_name)
         
         return {
-            'total_users': total_users,
-            'total_messages': total_messages,
-            'active_conversations': total_users,
-            'uptime': datetime.now().isoformat(),
-            'training_data_status': 'connected' if self.training_client.check_health() else 'disconnected'
+            'message': main_response,
+            'type': 'text',
+            'method': 'rasa',
+            'intent': intent_name,
+            'confidence': intent.get('confidence', 0.0),
+            'entities': entities,
+            'suggestions': suggestions,
+            'timestamp': datetime.now().isoformat()
         }
     
-    def handle_invoice_analysis(self, message: str, context: Dict) -> Dict[str, Any]:
-        """Xử lý phân tích hóa đơn sử dụng training data"""
-        try:
-            # Extract thông tin từ message sử dụng patterns đã học
-            extracted_info = self.pattern_matcher.extract_invoice_info(message)
-            
-            if not extracted_info:
-                return {
-                    'message': '🔍 Tôi không tìm thấy thông tin hóa đơn rõ ràng trong tin nhắn của bạn.\n\n'
-                              'Vui lòng cung cấp thêm thông tin như:\n'
-                              '• Số hóa đơn\n'
-                              '• Ngày hóa đơn\n'
-                              '• Tên công ty\n'
-                              '• Số tiền\n'
-                              '• Mã số thuế',
-                    'type': 'text',
-                    'suggestions': [
-                        'Gửi ảnh hóa đơn',
-                        'Nhập thông tin chi tiết',
-                        'Hướng dẫn sử dụng',
-                        'Liên hệ hỗ trợ'
-                    ]
-                }
-            
-            # Format kết quả
-            response_parts = ['🎯 **Thông tin hóa đơn đã nhận dạng:**\n']
-            
-            for field_name, info in extracted_info.items():
-                best_match = info.get('best_match')
-                confidence = info.get('confidence', 0.0)
-                
-                if best_match and confidence > 0.3:  # Chỉ hiển thị nếu độ tin cậy > 30%
-                    confidence_icon = '🟢' if confidence > 0.7 else '🟡' if confidence > 0.5 else '🔴'
-                    field_display_name = self._get_field_display_name(field_name)
-                    
-                    response_parts.append(
-                        f'{confidence_icon} **{field_display_name}**: {best_match} '
-                        f'(Độ tin cậy: {confidence:.0%})'
-                    )
-            
-            # Gợi ý loại template
-            suggested_type = self.pattern_matcher.suggest_template_type(extracted_info)
-            if suggested_type != 'unknown':
-                response_parts.append(f'\n💡 **Loại mẫu gợi ý**: {suggested_type.upper()}')
-            
-            # Thống kê training data
-            stats = self.training_client.get_statistics()
-            if stats:
-                total_records = stats.get('total_records', 0)
-                response_parts.append(f'\n📊 Dựa trên {total_records} mẫu hóa đơn đã học')
-            
-            return {
-                'message': '\n'.join(response_parts),
-                'type': 'markdown',
-                'extracted_data': extracted_info,
-                'suggestions': [
-                    'Tạo hóa đơn từ thông tin này',
-                    'Kiểm tra thông tin khác',
-                    'Xuất file Excel',
-                    'Lưu vào hệ thống'
-                ]
-            }
-            
-        except Exception as e:
-            logger.error(f"Lỗi khi phân tích hóa đơn: {str(e)}")
-            return {
-                'message': '❌ Có lỗi xảy ra khi phân tích hóa đơn. Vui lòng thử lại sau.',
-                'type': 'text',
-                'suggestions': ['Thử lại', 'Liên hệ hỗ trợ']
-            }
-    
-    def handle_template_help(self, message: str, context: Dict) -> Dict[str, Any]:
-        """Xử lý trợ giúp về templates dựa trên training data"""
-        try:
-            # Lấy thống kê về templates
-            stats = self.training_client.get_statistics()
-            
-            if not stats:
-                return {
-                    'message': '📋 **Hỗ trợ về mẫu hóa đơn**\n\n'
-                              'Tôi có thể giúp bạn tạo và quản lý các mẫu hóa đơn. '
-                              'Tuy nhiên, hiện tại không thể kết nối với dữ liệu mẫu.',
-                    'type': 'markdown',
-                    'suggestions': ['Thử lại', 'Liên hệ hỗ trợ']
-                }
-            
-            response_parts = ['📋 **Thống kê mẫu hóa đơn trong hệ thống:**\n']
-            
-            # Hiển thị thống kê theo loại
-            by_type = stats.get('by_type', {})
-            total_records = stats.get('total_records', 0)
-            
-            response_parts.append(f'📊 **Tổng số mẫu**: {total_records}')
-            
-            if by_type:
-                response_parts.append('\n**Phân loại theo định dạng:**')
-                for template_type, type_stats in by_type.items():
-                    count = type_stats.get('count', 0)
-                    avg_fields = type_stats.get('avg_fields', 0)
-                    response_parts.append(
-                        f'• **{template_type.upper()}**: {count} mẫu '
-                        f'(TB {avg_fields} trường thông tin)'
-                    )
-            
-            # Gợi ý field phổ biến
-            common_fields = self.pattern_matcher.common_fields[:10]
-            if common_fields:
-                response_parts.append('\n**🏷️ Trường thông tin phổ biến:**')
-                for field in common_fields:
-                    display_name = self._get_field_display_name(field)
-                    response_parts.append(f'• {display_name}')
-            
-            return {
-                'message': '\n'.join(response_parts),
-                'type': 'markdown',
-                'training_stats': stats,
-                'suggestions': [
-                    'Tạo mẫu mới',
-                    'Xem danh sách mẫu',
-                    'Hướng dẫn tạo mẫu',
-                    'Nhập mẫu từ file'
-                ]
-            }
-            
-        except Exception as e:
-            logger.error(f"Lỗi khi xử lý template help: {str(e)}")
-            return {
-                'message': '❌ Có lỗi xảy ra khi truy xuất thông tin mẫu. Vui lòng thử lại sau.',
-                'type': 'text',
-                'suggestions': ['Thử lại', 'Liên hệ hỗ trợ']
-            }
-    
-    def _get_field_display_name(self, field_name: str) -> str:
-        """Chuyển đổi field name thành tên hiển thị tiếng Việt"""
-        display_names = {
-            'invoice_number': 'Số hóa đơn',
-            'invoice_date': 'Ngày hóa đơn',
-            'due_date': 'Hạn thanh toán',
-            'company_name': 'Tên công ty',
-            'company_address': 'Địa chỉ công ty',
-            'tax_code': 'Mã số thuế',
-            'customer_name': 'Tên khách hàng',
-            'customer_address': 'Địa chỉ khách hàng',
-            'customer_phone': 'Điện thoại khách hàng',
-            'subtotal': 'Tiền hàng',
-            'tax_amount': 'Tiền thuế',
-            'total_amount': 'Tổng tiền',
-            'amount': 'Số tiền',
-            'description': 'Mô tả',
-            'quantity': 'Số lượng',
-            'unit_price': 'Đơn giá',
-            'currency': 'Đơn vị tiền tệ'
+    def get_rasa_suggestions(self, intent_name: str) -> List[str]:
+        """Tạo suggestions dựa trên Rasa intent"""
+        suggestion_map = {
+            'greet': ['Tôi cần giúp về hóa đơn', 'Tạo mẫu hóa đơn', 'Upload file'],
+            'ask_invoice_help': ['Tạo hóa đơn mới', 'Xem mẫu có sẵn', 'Hướng dẫn OCR'],
+            'create_invoice_template': ['Chọn loại mẫu', 'Thêm field', 'Preview mẫu'],
+            'extract_invoice_data': ['Upload PDF', 'Upload ảnh', 'Xem kết quả'],
+            'goodbye': ['Cảm ơn!', 'Hẹn gặp lại!'],
+            'unknown': ['Hướng dẫn', 'Tính năng', 'Hỗ trợ']
         }
         
-        return display_names.get(field_name, field_name.replace('_', ' ').title())
-    
-    def refresh_training_data(self):
-        """Refresh training data từ backend"""
-        try:
-            self.pattern_matcher.refresh_patterns()
-            logger.info("Đã refresh training data thành công")
-            return True
-        except Exception as e:
-            logger.error(f"Lỗi khi refresh training data: {str(e)}")
-            return False
+        return suggestion_map.get(intent_name, ['Tạo hóa đơn', 'OCR', 'Tìm kiếm', 'Hỗ trợ'])

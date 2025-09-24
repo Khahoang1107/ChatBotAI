@@ -6,6 +6,7 @@ Flask-CORS==4.0.1
 Flask-Limiter==3.8.0
 Flask-Mail==0.10.0
 Flask-WTF==1.2.1
+Flask-SocketIO==5.3.6  # WebSocket support for real-time notifications
 Werkzeug==3.0.3
 
 # Database drivers
@@ -31,6 +32,8 @@ requests==2.32.3
 celery==5.3.4
 redis==5.0.8
 gunicorn==22.0.0
+kombu==5.3.4  # Celery message transport
+flower==2.0.1  # Celery monitoring (optional)
 
 # Development tools
 pytest==8.3.2
@@ -42,6 +45,7 @@ isort==5.13.2
 
 # Security
 bcrypt==4.2.0
+Flask-Bcrypt==1.0.1
 cryptography==43.0.0
 
 # Logging and monitoring

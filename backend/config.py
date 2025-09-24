@@ -1,6 +1,12 @@
 import os
 from datetime import timedelta
 
+# Load environment variables from .env.docker if it exists (for Docker)
+env_file = os.path.join(os.path.dirname(__file__), '..', '.env.docker')
+if os.path.exists(env_file):
+    from dotenv import load_dotenv
+    load_dotenv(env_file)
+
 class Config:
     # Flask settings
     SECRET_KEY = os.environ.get('SECRET_KEY') or 'dev-secret-key-change-in-production'

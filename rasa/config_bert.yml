@@ -1,0 +1,99 @@
+# BERT-Enhanced Rasa Configuration for Vietnamese Invoice Processing
+# Documentation: https://rasa.com/docs/rasa/model-configuration/
+
+version: "3.1"
+
+recipe: default.v1
+
+language: vi
+
+# 🧠 BERT + Rasa Hybrid Pipeline
+pipeline:
+  # Vietnamese Language Processing
+  - name: SpacyNLP
+    model: "vi_core_news_lg"
+  - name: SpacyTokenizer
+
+  # 🚀 BERT Integration for Semantic Understanding
+  - name: HFTransformersNLP
+    model_name: "vinai/phobert-base" # Vietnamese BERT
+    model_weights: "vinai/phobert-base"
+    cache_dir: "./models/transformers"
+
+  - name: LanguageModelFeaturizer
+    model_name: "vinai/phobert-base"
+    cache_dir: "./models/transformers"
+
+  # Traditional Rasa Components (backup/complement)
+  - name: SpacyFeaturizer
+    pooling: mean
+
+  # Character-level features for Vietnamese (fallback)
+  - name: RegexFeaturizer
+  - name: LexicalSyntacticFeaturizer
+  - name: CountVectorsFeaturizer
+    analyzer: char_wb
+    min_ngram: 1
+    max_ngram: 4
+
+  # 🎯 Enhanced Intent Classification with BERT
+  - name: DIETClassifier
+    epochs: 200 # Tăng epochs vì có BERT
+    entity_recognition: True
+    intent_classification: True
+    use_masked_language_model: True # Leverage BERT's masked LM
+    number_of_transformer_layers: 2
+    transformer_size: 256
+    constrain_similarities: True
+    model_confidence: linear_norm
+
+  # Entity Extraction với BERT context
+  - name: EntitySynonymMapper
+  - name: ResponseSelector
+    epochs: 100
+    retrieval_intent: chitchat
+    use_masked_language_model: True
+
+  # Fallback handling với confidence thresholding
+  - name: FallbackClassifier
+    threshold: 0.4 # Tăng threshold vì BERT chính xác hơn
+    ambiguity_threshold: 0.1
+
+# 🤖 Enhanced Policies with BERT-aware features
+policies:
+  # Rule-based policies (high priority)
+  - name: RulePolicy
+    core_fallback_threshold: 0.4
+    core_fallback_action_name: "action_default_fallback"
+    enable_fallback_prediction: True
+
+  # Memoization for exact matches
+  - name: MemoizationPolicy
+    max_history: 5
+
+  # 🧠 Machine Learning Policies leveraging BERT features
+  - name: UnexpecTEDIntentPolicy
+    max_history: 5
+    epochs: 200
+    number_of_transformer_layers: 1
+    transformer_size: 256
+
+  - name: TEDPolicy
+    max_history: 5
+    epochs: 200
+    number_of_transformer_layers: 2
+    transformer_size: 256
+    # Leverage BERT embeddings
+    featurizer:
+      - name: MaxHistoryTrackerFeaturizer
+        max_history: 5
+        state_featurizer:
+          - name: BinarySingleStateFeaturizer
+
+# 🎛️ Assistant Configuration
+assistant_id: invoice_bert_assistant
+
+# Session Configuration
+session_config:
+  session_expiration_time: 60
+  carry_over_slots_to_new_session: true

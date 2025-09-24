@@ -1,0 +1,70 @@
+# Git
+.git
+.gitignore
+
+# Docker
+docker-compose*.yml
+Dockerfile*
+.dockerignore
+
+# Environment files
+.env*
+!.env.docker
+
+# Documentation
+*.md
+!README.md
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+.pytest_cache/
+__pycache__/
+*.pyc
+*.pyo
+
+# Node modules (for non-frontend services)
+node_modules/
+npm-debug.log*
+
+# Python virtual environments
+venv/
+env/
+ENV/
+
+# Database files (local development)
+*.db
+*.sqlite
+*.sqlite3
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Coverage reports
+.coverage
+htmlcov/
+coverage.xml
+
+# Testing
+.tox/
+.nox/
+
+# Jupyter Notebook
+.ipynb_checkpoints

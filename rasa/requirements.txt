@@ -3,3 +3,17 @@ rasa-sdk==3.6.0
 spacy>=3.4.0,<3.8
 requests>=2.25.0
 python-multipart>=0.0.5
+
+# 🧠 BERT and Transformers for enhanced NLP
+transformers>=4.21.0
+torch>=1.12.0
+numpy>=1.21.0
+scikit-learn>=1.1.0
+
+# Vietnamese Language Support
+pyvi>=0.1.1  # Vietnamese tokenizer
+underthesea>=1.3.0  # Vietnamese NLP toolkit
+
+# Performance optimization
+accelerate>=0.20.0  # Hugging Face acceleration
+datasets>=2.0.0  # Dataset handling
