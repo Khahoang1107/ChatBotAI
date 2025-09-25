@@ -7,7 +7,7 @@ from typing import Dict, List, Any, Optional
 from config import Config
 from models.ai_model import AIModel
 from utils.text_processor import TextProcessor
-from utils.training_client import TrainingDataClient, InvoicePatternMatcher
+# from utils.training_client import TrainingDataClient, InvoicePatternMatcher
 import logging
 
 logger = logging.getLogger(__name__)
@@ -22,15 +22,20 @@ class ChatHandler:
         self.rasa_url = os.getenv('RASA_URL', 'http://rasa:5005')  # Từ environment
         self.use_rasa = True  # Flag để bật/tắt Rasa
         
+        # TODO: Re-enable training client after fixing dependency issues
         # Khởi tạo training client để lấy dữ liệu học từ templates
-        self.training_client = TrainingDataClient()
-        self.pattern_matcher = InvoicePatternMatcher(self.training_client)
+        # self.training_client = TrainingDataClient()
+        # self.pattern_matcher = InvoicePatternMatcher(self.training_client)
+        self.training_client = None
+        self.pattern_matcher = None
         
+        # TODO: Re-enable after fixing
         # Kiểm tra kết nối với backend training data
-        if self.training_client.check_health():
-            logger.info("Kết nối thành công với training data backend")
-        else:
-            logger.warning("Không thể kết nối với training data backend")
+        # if self.training_client and self.training_client.check_health():
+        #     logger.info("Kết nối thành công với training data backend")
+        # else:
+        #     logger.warning("Không thể kết nối với training data backend")
+        logger.info("Training client temporarily disabled")
         
         # Kiểm tra kết nối Rasa
         if self.check_rasa_connection():
@@ -75,7 +80,7 @@ class ChatHandler:
             ]
         }
 
-    def process_message(self, message: str, user_id: str = 'anonymous') -> Dict[str, Any]:
+    async def process_message(self, message: str, user_id: str = 'anonymous') -> Dict[str, Any]:
         """Xử lý tin nhắn từ user với Rasa integration"""
         logger.info(f"Processing message from {user_id}: {message}")
         
@@ -88,8 +93,12 @@ class ChatHandler:
                     response = self.format_rasa_response(rasa_response)
                     self.update_conversation_history(user_id, message, response)
                     return response
+                else:
+                    # Rasa poor response → fallback to hybrid system
+                    return await self.fallback_to_hybrid_system(message, user_id, rasa_response)
             except Exception as e:
-                logger.warning(f"Rasa query failed: {e}, falling back to patterns")
+                logger.warning(f"Rasa query failed: {e}, falling back to hybrid system")
+                return await self.fallback_to_hybrid_system(message, user_id, {})
         
         # Fallback to original pattern-based logic
         try:
@@ -380,7 +389,7 @@ Bạn cần hỗ trợ gì hôm nay?
             return None
     
     def is_good_rasa_response(self, rasa_result: Dict[str, Any]) -> bool:
-        """Kiểm tra chất lượng response từ Rasa"""
+        """Kiểm tra chất lượng response từ Rasa - Enhanced version"""
         if not rasa_result.get('success'):
             return False
             
@@ -388,26 +397,53 @@ Bạn cần hỗ trợ gì hôm nay?
         if not responses:
             return False
             
-        # Kiểm tra confidence
+        # Kiểm tra confidence - Stricter
         intent = rasa_result.get('intent', {})
         confidence = intent.get('confidence', 0.0)
         
-        if confidence < 0.3:  # Confidence quá thấp
+        if confidence < 0.5:  # Tăng từ 0.3 → 0.5
+            logger.debug(f"Rasa confidence too low: {confidence:.3f}")
             return False
             
         # Kiểm tra response content
         response_text = responses[0].get('text', '').lower()
+        
+        # Enhanced bad patterns
         bad_patterns = [
             "xin lỗi, tôi không hiểu",
             "tôi không biết",
+            "tôi không thể hiểu", 
             "utter_default",
-            "sorry"
+            "sorry",
+            "tôi cần thêm thông tin",
+            "bạn có thể nói rõ hơn không"
         ]
         
         for bad_pattern in bad_patterns:
             if bad_pattern in response_text:
+                logger.debug(f"Rasa response contains bad pattern: {bad_pattern}")
                 return False
         
+        # Kiểm tra suspicious patterns (có thể đang "bịa")
+        suspicious_patterns = [
+            "theo tôi hiểu",
+            "có lẽ", 
+            "tôi nghĩ rằng",
+            "dường như",
+            "có thể"
+        ]
+        
+        suspicious_count = sum(1 for pattern in suspicious_patterns if pattern in response_text)
+        if suspicious_count >= 2:
+            logger.debug(f"Rasa response too suspicious: {suspicious_count} patterns")
+            return False
+        
+        # Kiểm tra length - stricter
+        if len(response_text.strip()) < 15:  # Tăng từ 10
+            logger.debug(f"Rasa response too short: {len(response_text)} chars")
+            return False
+        
+        logger.debug(f"Rasa response accepted: confidence={confidence:.3f}")
         return True
     
     def format_rasa_response(self, rasa_result: Dict[str, Any]) -> Dict[str, Any]:
@@ -445,3 +481,69 @@ Bạn cần hỗ trợ gì hôm nay?
         }
         
         return suggestion_map.get(intent_name, ['Tạo hóa đơn', 'OCR', 'Tìm kiếm', 'Hỗ trợ'])
+    
+    async def fallback_to_hybrid_system(self, message: str, user_id: str, rasa_result: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Fallback sang Hybrid System khi Rasa không trả lời được
+        """
+        try:
+            # Import hybrid chat handler
+            from handlers.hybrid_chat_handler import HybridChatBot
+            
+            logger.info(f"Falling back to Hybrid System for user {user_id}")
+            
+            # Khởi tạo hybrid system
+            hybrid_chat = HybridChatBot()
+            
+            # Sử dụng hybrid system để xử lý tin nhắn
+            hybrid_response = await hybrid_chat.process_message(message, user_id)
+            
+            # Enhance response với info về fallback
+            if isinstance(hybrid_response, dict):
+                hybrid_response['method'] = f"hybrid_fallback_{hybrid_response.get('method', 'unknown')}"
+                hybrid_response['fallback_reason'] = "rasa_failed_or_poor_response"
+                if rasa_result:
+                    hybrid_response['rasa_context'] = rasa_result
+                
+                self.update_conversation_history(user_id, message, hybrid_response)
+                return hybrid_response
+            else:
+                # Fallback to pattern-based logic nếu hybrid cũng fail
+                return self.pattern_based_fallback(message, user_id)
+                
+        except Exception as e:
+            logger.error(f"Hybrid system fallback failed: {str(e)}")
+            # Ultimate fallback to pattern-based logic
+            return self.pattern_based_fallback(message, user_id)
+    
+    def pattern_based_fallback(self, message: str, user_id: str) -> Dict[str, Any]:
+        """
+        Pattern-based fallback logic (original logic)
+        """
+        try:
+            # Lấy context cuộc hội thoại
+            context = self.get_conversation_context(user_id)
+            
+            # Nhận diện intent
+            intent = self.detect_intent(message)
+            
+            # Xử lý theo intent
+            response = self.handle_intent(intent, message, context)
+            response['method'] = 'pattern_based_fallback'
+            response['fallback_reason'] = 'hybrid_system_failed'
+            
+            # Cập nhật lịch sử hội thoại
+            self.update_conversation_history(user_id, message, response)
+            
+            return response
+            
+        except Exception as e:
+            logger.error(f"Pattern-based fallback error: {str(e)}")
+            return {
+                'message': 'Xin lỗi, đã có lỗi xảy ra. Vui lòng thử lại hoặc liên hệ hỗ trợ.',
+                'type': 'text',
+                'method': 'simple_fallback',
+                'error': str(e),
+                'suggestions': ['Hỗ trợ kỹ thuật', 'Thử lại', 'Liên hệ admin'],
+                'timestamp': datetime.now().isoformat()
+            }

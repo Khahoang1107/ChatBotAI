@@ -8,7 +8,7 @@ bcrypt = Bcrypt()
 # Import all models
 from .user import User
 from .invoice import Invoice, InvoiceItem
-from .template import Template
+from .template import InvoiceTemplate, Template
 from .ocr_result import OCRResult
 
-__all__ = ['db', 'bcrypt', 'User', 'Invoice', 'InvoiceItem', 'Template', 'OCRResult']
+__all__ = ['db', 'bcrypt', 'User', 'Invoice', 'InvoiceItem', 'InvoiceTemplate', 'Template', 'OCRResult']

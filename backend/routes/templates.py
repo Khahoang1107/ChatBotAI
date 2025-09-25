@@ -2,7 +2,6 @@ from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from marshmallow import Schema, fields, ValidationError
 from models import db, InvoiceTemplate, User
-from services.training_service import TrainingDataService
 import requests
 import json
 from datetime import datetime
@@ -100,25 +99,11 @@ def create_template():
         db.session.add(template)
         db.session.commit()
         
-        # Lưu training data cho AI ngay sau khi tạo template thành công
-        try:
-            training_service = TrainingDataService()
-            training_id = training_service.save_template_training_data(
-                template, 
-                additional_metadata={
-                    "created_by_user": current_user_id,
-                    "creation_method": "manual_creation",
-                    "has_field_mappings": 'field_mappings' in data,
-                    "has_ocr_zones": 'ocr_zones' in data
-                }
-            )
-            
-            if training_id:
-                logger.info(f"Đã lưu training data cho template {template.id}, training_id: {training_id}")
-            else:
-                logger.warning(f"Không thể lưu training data cho template {template.id}")
-                
-        except Exception as training_error:
+        # Training data service removed - simplified template creation
+        logger.info(f"Template {template.id} created successfully")
+        
+        # Skip training data for now
+        if False:  # Disabled training service
             logger.error(f"Lỗi khi lưu training data cho template {template.id}: {str(training_error)}")
             # Không làm fail việc tạo template, chỉ log lỗi
         
@@ -173,26 +158,11 @@ def update_template(template_id):
     try:
         db.session.commit()
         
-        # Cập nhật training data sau khi update template thành công
-        try:
-            training_service = TrainingDataService()
-            training_id = training_service.save_template_training_data(
-                template, 
-                additional_metadata={
-                    "updated_by_user": current_user_id,
-                    "creation_method": "template_update",
-                    "has_field_mappings": 'field_mappings' in data,
-                    "has_ocr_zones": 'ocr_zones' in data,
-                    "update_timestamp": datetime.utcnow().isoformat()
-                }
-            )
-            
-            if training_id:
-                logger.info(f"Đã cập nhật training data cho template {template.id}, training_id: {training_id}")
-            else:
-                logger.warning(f"Không thể cập nhật training data cho template {template.id}")
-                
-        except Exception as training_error:
+        # Training data service removed - simplified template updating
+        logger.info(f"Template {template.id} updated successfully")
+        
+        # Skip training data for now  
+        if False:  # Disabled training service
             logger.error(f"Lỗi khi cập nhật training data cho template {template.id}: {str(training_error)}")
             # Không làm fail việc update template, chỉ log lỗi
         

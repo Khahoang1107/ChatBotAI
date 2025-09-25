@@ -5,7 +5,12 @@ from config import Config
 
 class AIModel:
     def __init__(self):
-        self.client = openai.OpenAI(api_key=Config.OPENAI_API_KEY)
+        # Use minimal OpenAI client initialization to avoid parameter conflicts
+        try:
+            self.client = openai.OpenAI()  # Will use OPENAI_API_KEY from environment
+        except Exception as e:
+            print(f"Warning: Could not initialize OpenAI client: {e}")
+            self.client = None
         self.model = getattr(Config, 'DEFAULT_MODEL', 'gpt-3.5-turbo')
         self.max_tokens = getattr(Config, 'MAX_TOKENS', 1000)
         self.temperature = getattr(Config, 'TEMPERATURE', 0.7)

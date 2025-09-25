@@ -1,6 +1,7 @@
 import requests
 import json
 import logging
+import os
 from typing import Dict, List, Any, Optional
 from datetime import datetime
 
@@ -11,7 +12,11 @@ class TrainingDataClient:
     Client để kết nối với backend API và lấy training data cho chatbot
     """
     
-    def __init__(self, base_url: str = "http://localhost:5000/api/ai-training"):
+    def __init__(self, base_url: str = None):
+        # Use Docker service name in container, localhost for development
+        if base_url is None:
+            base_url = os.getenv('BACKEND_URL', 'http://backend:5000/api/ai-training')
+        
         self.base_url = base_url
         self.session = requests.Session()
         self.session.headers.update({

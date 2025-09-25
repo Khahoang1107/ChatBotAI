@@ -1,37 +1,15 @@
 version: '3.8'
 
 services:
-  # MongoDB Database for AI Training Data
-  mongodb:
-    image: mongo:7.0
-    container_name: invoice_mongodb
-    restart: unless-stopped
-    environment:
-      MONGO_INITDB_ROOT_USERNAME: admin
-      MONGO_INITDB_ROOT_PASSWORD: password123
-      MONGO_INITDB_DATABASE: invoice_ai_training
-    ports:
-      - "27017:27017"
-    volumes:
-      - mongodb_data:/data/db
-      - ./docker/mongo-init:/docker-entrypoint-initdb.d
-    networks:
-      - invoice_network
-    healthcheck:
-      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-
-  # PostgreSQL Database for Main Application
+  # Core Database Service
   postgres:
     image: postgres:15-alpine
     container_name: invoice_postgres
     restart: unless-stopped
     environment:
-      POSTGRES_DB: invoice_app
-      POSTGRES_USER: invoice_user
-      POSTGRES_PASSWORD: invoice_pass123
+      POSTGRES_DB: ${POSTGRES_DB:-invoice_db}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres123}
     ports:
       - "5432:5432"
     volumes:
@@ -39,45 +17,36 @@ services:
     networks:
       - invoice_network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U invoice_user -d invoice_app"]
-      interval: 10s
-      timeout: 5s
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 30s
+      timeout: 10s
       retries: 3
 
   # Backend API Service
   backend:
-    build:
+    build: 
       context: ./backend
       dockerfile: Dockerfile
     container_name: invoice_backend
     restart: unless-stopped
     environment:
-      FLASK_ENV: development
-      FLASK_APP: app.py
-      SECRET_KEY: dev-secret-key-change-in-production
-      JWT_SECRET_KEY: jwt-dev-secret-key
-      DATABASE_URL: postgresql://invoice_user:invoice_pass123@postgres:5432/invoice_app
-      MONGODB_URL: mongodb://admin:password123@mongodb:27017/
-      MONGODB_DB_NAME: invoice_ai_training
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      REDIS_URL: redis://redis:6379/0
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres123}@postgres:5432/${POSTGRES_DB:-invoice_db}
+      - FLASK_ENV=${FLASK_ENV:-development}
+      - SECRET_KEY=${SECRET_KEY:-dev-secret-key}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-jwt-secret-key}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
     ports:
       - "5000:5000"
-    volumes:
-      - ./backend:/app
-      - /app/__pycache__
     depends_on:
       postgres:
         condition: service_healthy
-      mongodb:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
     networks:
       - invoice_network
-    command: python app.py
+    volumes:
+      - ./backend:/app
+      - backend_uploads:/app/uploads
 
-  # Chatbot Service
+  # AI Chatbot Service
   chatbot:
     build:
       context: ./chatbot
@@ -85,103 +54,17 @@ services:
     container_name: invoice_chatbot
     restart: unless-stopped
     environment:
-      FLASK_ENV: development
-      FLASK_APP: app.py
-      BOT_NAME: InvoiceBot
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      DATABASE_URL: sqlite:///chatbot.db
-      REDIS_URL: redis://redis:6379/0
-      RASA_URL: http://rasa:5005  # Rasa service endpoint
+      - FLASK_ENV=${FLASK_ENV:-development}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - BACKEND_API_URL=http://backend:5000
     ports:
       - "5001:5001"
-    volumes:
-      - ./chatbot:/app
-      - /app/__pycache__
     depends_on:
       - backend
-      - rasa  # Chatbot now depends on Rasa
-      - redis
     networks:
       - invoice_network
-    command: python app.py
-
-  # 🚀 Celery Worker - Event-Driven OCR Processing
-  celery_worker:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    container_name: invoice_celery_worker
-    restart: unless-stopped
-    environment:
-      FLASK_ENV: development
-      FLASK_APP: app.py
-      SECRET_KEY: dev-secret-key-change-in-production
-      JWT_SECRET_KEY: jwt-dev-secret-key
-      DATABASE_URL: postgresql://invoice_user:invoice_pass123@postgres:5432/invoice_app
-      MONGODB_URL: mongodb://admin:password123@mongodb:27017/
-      MONGODB_DB_NAME: invoice_ai_training
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      REDIS_URL: redis://redis:6379/0
-      C_FORCE_ROOT: 1  # Allow Celery to run as root
     volumes:
-      - ./backend:/app
-      - /app/__pycache__
-    depends_on:
-      postgres:
-        condition: service_healthy
-      mongodb:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    networks:
-      - invoice_network
-    command: celery -A celery_config.celery worker --loglevel=info --concurrency=4 --queues=ocr_queue,ai_queue,notification_queue,default
-
-  # 🚀 Celery Beat - Scheduled Tasks (Optional)
-  celery_beat:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    container_name: invoice_celery_beat
-    restart: unless-stopped
-    environment:
-      FLASK_ENV: development
-      DATABASE_URL: postgresql://invoice_user:invoice_pass123@postgres:5432/invoice_app
-      REDIS_URL: redis://redis:6379/0
-      C_FORCE_ROOT: 1
-    volumes:
-      - ./backend:/app
-      - /app/__pycache__
-    depends_on:
-      - redis
-      - postgres
-    networks:
-      - invoice_network
-    command: celery -A celery_config.celery beat --loglevel=info
-    profiles:
-      - celery-beat  # Optional service
-
-  # 🚀 Celery Flower - Monitoring (Optional)
-  celery_flower:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    container_name: invoice_celery_flower
-    restart: unless-stopped
-    environment:
-      REDIS_URL: redis://redis:6379/0
-      C_FORCE_ROOT: 1
-    ports:
-      - "5555:5555"
-    volumes:
-      - ./backend:/app
-    depends_on:
-      - redis
-    networks:
-      - invoice_network
-    command: celery -A celery_config.celery flower --port=5555
-    profiles:
-      - monitoring  # Optional service
+      - ./chatbot:/app
 
   # Frontend Service
   frontend:
@@ -192,64 +75,23 @@ services:
     restart: unless-stopped
     ports:
       - "5174:5174"
+    depends_on:
+      - backend
+      - chatbot
+    networks:
+      - invoice_network
     volumes:
       - ./frontend:/app
-      - /app/node_modules  # Anonymous volume để preserve node_modules
-    depends_on:
-      - backend
-    networks:
-      - invoice_network
-    command: npx vite --host 0.0.0.0 --port 5174
-
-  # Redis for caching and sessions
-  redis:
-    image: redis:7-alpine
-    container_name: invoice_redis
-    restart: unless-stopped
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-    networks:
-      - invoice_network
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-
-  # Rasa Service (Optional - for advanced NLP)
-  rasa:
-    build:
-      context: ./rasa
-      dockerfile: Dockerfile
-    container_name: invoice_rasa
-    restart: unless-stopped
-    ports:
-      - "5005:5005"
-    volumes:
-      - ./rasa:/app
-    depends_on:
-      - backend
-    networks:
-      - invoice_network
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5005/status"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-    # Remove profiles to make it available by default
-    # profiles:
-    #   - rasa  # Only start with --profile rasa
-
-volumes:
-  mongodb_data:
-    driver: local
-  postgres_data:
-    driver: local
-  redis_data:
-    driver: local
+      - frontend_node_modules:/app/node_modules
+    environment:
+      - VITE_API_BASE_URL=http://localhost:5000
+      - VITE_CHATBOT_URL=http://localhost:5001
 
 networks:
   invoice_network:
     driver: bridge
+
+volumes:
+  postgres_data:
+  backend_uploads:
+  frontend_node_modules:

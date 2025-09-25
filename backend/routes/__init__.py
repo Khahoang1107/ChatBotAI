@@ -1,7 +1,7 @@
 from flask import Blueprint
 
 # Import all route blueprints
-from .auth import auth_bp
+from .auth import bp as auth_bp
 from .invoices import invoices_bp
 from .templates import templates_bp
 from .ocr import ocr_bp

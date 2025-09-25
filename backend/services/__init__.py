@@ -1,4 +1,4 @@
 # Services module init file
-from .ocr_service import OCRService
+from .ocr_service import EnhancedOCRService
 
-__all__ = ['OCRService']
+__all__ = ['EnhancedOCRService']

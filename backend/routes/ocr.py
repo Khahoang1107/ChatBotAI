@@ -6,7 +6,7 @@ import os
 import time
 from datetime import datetime
 from models import db, OCRResult, InvoiceTemplate, Invoice
-from services.ocr_service import OCRService
+from services.ocr_service import EnhancedOCRService
 
 ocr_bp = Blueprint('ocr', __name__)
 
@@ -72,7 +72,7 @@ def process_ocr():
             ).first()
         
         # Process OCR
-        ocr_service = OCRService()
+        ocr_service = EnhancedOCRService()
         start_time = time.time()
         
         extracted_data = ocr_service.process_image(
@@ -336,7 +336,7 @@ def test_template_with_ocr(template_id):
     
     try:
         # Process OCR with template
-        ocr_service = OCRService()
+        ocr_service = EnhancedOCRService()
         start_time = time.time()
         
         extracted_data = ocr_service.process_image(

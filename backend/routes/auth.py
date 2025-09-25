@@ -3,7 +3,7 @@ from flask_jwt_extended import create_access_token, create_refresh_token, jwt_re
 from marshmallow import Schema, fields, ValidationError
 from models import db, User
 
-auth_bp = Blueprint('auth', __name__)
+bp = Blueprint('auth', __name__)
 
 # Validation schemas
 class RegisterSchema(Schema):
@@ -16,7 +16,7 @@ class LoginSchema(Schema):
     username = fields.Str(required=True)
     password = fields.Str(required=True)
 
-@auth_bp.route('/register', methods=['POST'])
+@bp.route('/register', methods=['POST'])
 def register():
     """Register a new user"""
     schema = RegisterSchema()
@@ -58,7 +58,7 @@ def register():
         db.session.rollback()
         return jsonify({'error': 'Registration failed', 'message': str(e)}), 500
 
-@auth_bp.route('/login', methods=['POST'])
+@bp.route('/login', methods=['POST'])
 def login():
     """Login user"""
     schema = LoginSchema()
@@ -86,7 +86,7 @@ def login():
         'tokens': tokens
     })
 
-@auth_bp.route('/refresh', methods=['POST'])
+@bp.route('/refresh', methods=['POST'])
 @jwt_required(refresh=True)
 def refresh():
     """Refresh access token"""
@@ -99,7 +99,7 @@ def refresh():
     new_token = create_access_token(identity=current_user_id)
     return jsonify({'access_token': new_token})
 
-@auth_bp.route('/profile', methods=['GET'])
+@bp.route('/profile', methods=['GET'])
 @jwt_required()
 def get_profile():
     """Get current user profile"""
@@ -111,7 +111,7 @@ def get_profile():
     
     return jsonify({'user': user.to_dict()})
 
-@auth_bp.route('/profile', methods=['PUT'])
+@bp.route('/profile', methods=['PUT'])
 @jwt_required()
 def update_profile():
     """Update user profile"""
@@ -144,7 +144,7 @@ def update_profile():
         db.session.rollback()
         return jsonify({'error': 'Update failed', 'message': str(e)}), 500
 
-@auth_bp.route('/change-password', methods=['POST'])
+@bp.route('/change-password', methods=['POST'])
 @jwt_required()
 def change_password():
     """Change user password"""

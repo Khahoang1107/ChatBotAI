@@ -60,15 +60,13 @@ def chat():
             )
             loop.close()
         else:
-            # Fallback to hybrid system
+            # Fallback to original handler (now also supports Rasa with hybrid fallback)
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             response = loop.run_until_complete(
-                hybrid_chat.process_message(user_message, user_id)
+                chat_handler.process_message(user_message, user_id)
             )
             loop.close()
-            # Fallback to original handler
-            response = chat_handler.process_message(user_message, user_id)
         
         # Log phản hồi
         logger.info(f"Bot response to {user_id}: {response.get('message', '')[:100]}...")
