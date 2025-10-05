@@ -7,6 +7,7 @@ load_dotenv()
 class Config:
     # API Keys
     OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
+    GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY', '')
     
     # Chatbot Settings
     BOT_NAME = "InvoiceBot"
@@ -19,6 +20,9 @@ class Config:
     
     # Database Settings
     DATABASE_URL = os.getenv('DATABASE_URL', 'sqlite:///chatbot.db')
+    
+    # Backend API Settings
+    BACKEND_URL = os.getenv('BACKEND_URL', 'http://localhost:8000')  # ⭐ FastAPI backend URL
     
     # Redis Settings (for session management)
     REDIS_URL = os.getenv('REDIS_URL', 'redis://localhost:6379/0')

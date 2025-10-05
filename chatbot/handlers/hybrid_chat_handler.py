@@ -9,7 +9,6 @@ import logging
 from typing import Dict, List, Any, Optional
 from datetime import datetime
 from models.ai_model import AIModel
-import openai
 
 logger = logging.getLogger(__name__)
 

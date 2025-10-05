@@ -15,7 +15,7 @@ class TrainingDataClient:
     def __init__(self, base_url: str = None):
         # Use Docker service name in container, localhost for development
         if base_url is None:
-            base_url = os.getenv('BACKEND_URL', 'http://backend:5000/api/ai-training')
+            base_url = os.getenv('BACKEND_URL', 'http://localhost:8000/api/ai-training')
         
         self.base_url = base_url
         self.session = requests.Session()
@@ -233,6 +233,30 @@ class TrainingDataClient:
         
         time_diff = datetime.now() - self._last_cache_update[cache_key]
         return time_diff.total_seconds() < self._cache_timeout
+    
+    def get_training_statistics(self) -> Optional[Dict[str, Any]]:
+        """
+        Lấy thống kê training data từ backend
+        """
+        try:
+            # Try public endpoint first (no auth required)
+            response = self.session.get(
+                f"{self.base_url}/public-statistics",
+                timeout=10
+            )
+            
+            response.raise_for_status()
+            data = response.json()
+            
+            logger.info("Đã lấy thành công public training statistics")
+            return data
+            
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Lỗi kết nối khi lấy statistics: {str(e)}")
+            return None
+        except Exception as e:
+            logger.error(f"Lỗi không xác định khi lấy statistics: {str(e)}")
+            return None
     
     def clear_cache(self):
         """

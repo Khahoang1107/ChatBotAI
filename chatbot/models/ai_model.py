@@ -1,15 +1,24 @@
 import openai
 import json
+import os
 from typing import Dict, List, Any, Optional
 from config import Config
 
 class AIModel:
     def __init__(self):
-        # Use minimal OpenAI client initialization to avoid parameter conflicts
+        # Initialize OpenAI client with proper error handling for v1.30.x
         try:
-            self.client = openai.OpenAI()  # Will use OPENAI_API_KEY from environment
+            api_key = os.getenv('OPENAI_API_KEY')
+            if api_key and api_key.strip() and api_key != 'your-openai-api-key-here':
+                # Only initialize with api_key parameter for v1.30.x
+                self.client = openai.OpenAI(api_key=api_key)
+                print("OpenAI client initialized successfully")
+            else:
+                print("OPENAI_API_KEY not configured - using fallback responses")
+                self.client = None
         except Exception as e:
-            print(f"Warning: Could not initialize OpenAI client: {e}")
+            print(f"Could not initialize OpenAI client: {e}")
+            print("Switching to fallback responses")
             self.client = None
         self.model = getattr(Config, 'DEFAULT_MODEL', 'gpt-3.5-turbo')
         self.max_tokens = getattr(Config, 'MAX_TOKENS', 1000)
@@ -51,6 +60,9 @@ Nếu không biết câu trả lời chính xác, hãy thành thật nói không
     
     def generate_invoice_response(self, message: str, context: Dict = None) -> str:
         """Tạo phản hồi cho câu hỏi về hóa đơn"""
+        if not self.client:
+            return self._get_fallback_invoice_response(message)
+            
         try:
             # Lấy lịch sử hội thoại để có context
             conversation_history = self._format_conversation_history(context or {})
@@ -76,6 +88,9 @@ Nếu không biết câu trả lời chính xác, hãy thành thật nói không
     
     def generate_general_response(self, message: str, context: Dict = None) -> str:
         """Tạo phản hồi cho câu hỏi chung"""
+        if not self.client:
+            return self._get_fallback_general_response(message)
+            
         try:
             conversation_history = self._format_conversation_history(context or {})
             
@@ -97,18 +112,6 @@ Nếu không biết câu trả lời chính xác, hãy thành thật nói không
         except Exception as e:
             print(f"OpenAI API Error: {e}")
             return self._get_fallback_general_response(message)
-            
-            response = openai.ChatCompletion.create(
-                model=self.model,
-                messages=messages,
-                max_tokens=self.max_tokens,
-                temperature=self.temperature
-            )
-            
-            return response.choices[0].message.content.strip()
-            
-        except Exception as e:
-            return self._get_fallback_general_response()
     
     def analyze_invoice_image(self, image_path: str) -> Dict[str, Any]:
         """Phân tích ảnh hóa đơn bằng AI"""
@@ -128,6 +131,9 @@ Nếu không biết câu trả lời chính xác, hãy thành thật nói không
     
     def extract_entities(self, text: str) -> Dict[str, List[str]]:
         """Trích xuất các thực thể từ text"""
+        if not self.client:
+            return {"error": "OpenAI client not available"}
+            
         try:
             prompt = f"""
 Phân tích văn bản sau và trích xuất các thông tin:
@@ -142,7 +148,7 @@ Văn bản: {text}
 Trả về kết quả dạng JSON với các key: invoice_numbers, dates, companies, amounts, tax_codes
             """
             
-            response = openai.ChatCompletion.create(
+            response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=500,
@@ -241,8 +247,24 @@ Tôi hiểu bạn đang hỏi về hóa đơn. Có thể bạn muốn biết v�
 Bạn có thể hỏi cụ thể hơn để tôi hỗ trợ tốt nhất!
         """.strip()
     
-    def _get_fallback_general_response(self) -> str:
+    def _get_fallback_general_response(self, message: str) -> str:
         """Phản hồi dự phòng cho câu hỏi chung"""
+        # Phân tích từ khóa để đưa ra phản hồi phù hợp
+        message_lower = message.lower()
+        
+        if any(keyword in message_lower for keyword in ['xin chào', 'hello', 'hi', 'chào']):
+            return """
+Xin chào! 👋 Tôi là trợ lý AI hỗ trợ về hóa đơn và thuế.
+
+Tôi có thể giúp bạn:
+• 📄 Tạo và quản lý hóa đơn
+• 📊 Tính toán thuế VAT
+• 🔍 Tìm kiếm thông tin quy định
+• 💡 Tư vấn pháp luật thuế
+
+Bạn cần hỗ trợ gì hôm nay?
+            """.strip()
+        
         return """
 Xin lỗi, tôi gặp một chút khó khăn trong việc xử lý câu hỏi của bạn.
 
