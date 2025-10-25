@@ -1,0 +1,65 @@
+# 📋 OCR Upload → Database Test - QUICK START
+
+## 🎯 Test Goal
+Upload ảnh → OCR xử lý → **Lưu vào database** → Lấy dữ liệu
+
+## ⚡ 30-Second Setup
+
+### Terminal 1: Backend
+```powershell
+cd f:\DoAnCN\backend && uvicorn main:app --host localhost --port 8000
+```
+
+### Terminal 2: OCR Worker
+```powershell
+cd f:\DoAnCN\backend && python worker.py
+```
+
+### Terminal 3: Run Test
+```powershell
+cd f:\DoAnCN && python test_ocr_upload_to_db.py
+```
+
+## 📊 What Gets Checked
+
+1. **Upload**: Image → Server (✅ <100ms response)
+2. **Job Queue**: Job created in database (✅ queued)
+3. **OCR Processing**: Tesseract runs (✅ status: processing)
+4. **Database Save**: Invoice saved (✅ status: done)
+5. **Verify**: Count invoices before/after (✅ +1)
+6. **Query**: Groq can access invoice (✅ groq responds)
+
+## ✅ Success Criteria
+
+```
+✅ Job created → queued
+✅ Worker processes → processing
+✅ OCR completes → done
+✅ Invoice ID returned
+✅ Invoice count increases
+✅ New invoice in DB
+✅ Groq responds about invoice
+```
+
+## ❌ If Test Fails
+
+### "Status: queued" (stuck)
+→ Worker not running
+→ Start: `cd f:\DoAnCN\backend && python worker.py`
+
+### "OCR Failed: Tesseract not found"
+→ Install Tesseract from: https://github.com/UB-Mannheim/tesseract/wiki
+
+### "Cannot connect to backend"
+→ Start backend: `cd f:\DoAnCN\backend && uvicorn main:app --host localhost --port 8000`
+
+### "Invoice not found in DB"
+→ Check database: `psql -U postgres -d ocr_database_new -c "SELECT COUNT(*) FROM invoices"`
+
+## 📄 Full Documentation
+
+See: `OCR_UPLOAD_TO_DB_TEST_GUIDE.md`
+
+---
+
+✅ **Ready to test!**

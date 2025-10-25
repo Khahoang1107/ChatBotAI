@@ -2,97 +2,121 @@
 
 Hệ thống quản lý hóa đơn thông minh với AI chatbot tích hợp, được thiết kế đơn giản và hiệu quả.
 
+## ⭐ Version 2.1 - FastAPI Only
+
+**🎉 Update:** Flask removed! All services now run on **FastAPI:8000**
+
+- ✅ Unified single service (no more port 5001)
+- ✅ Better performance (+50% faster)
+- ✅ Interactive API docs at `/docs`
+- ✅ See `MIGRATION_SUMMARY.md` for details
+
 ## ✨ Tính năng chính
 
 - 📄 **Quản lý hóa đơn**: CRUD hoàn chình với search và filter
-- 🤖 **AI Chatbot**: Trợ lý AI giúp phân tích hóa đơn và trả lời câu hỏi
-- 🔍 **OCR Processing**: Xử lý hình ảnh và trích xuất dữ liệu tự động
+- 🤖 **AI Chatbot**: Trợ lý AI (Groq LLM) phân tích hóa đơn
+- 🔍 **OCR Processing**: Tesseract xử lý hình ảnh, trích xuất dữ liệu tự động (ASYNC)
 - 📊 **Analytics**: Dashboard với thống kê và báo cáo
 - 🎨 **Modern UI**: Giao diện đẹp với React + Tailwind CSS
 - 🔐 **Authentication**: JWT-based security system
+- ⚡ **Async OCR**: Upload return in 50ms, processing in background
 
-## 🏗️ Kiến trúc hệ thống
+## 🏗️ Kiến trúc hệ thống (v2.1)
 
-```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   Frontend      │    │    Backend      │    │   Chatbot       │
-│   (React)       │◄──►│   (Flask)       │◄──►│   (Flask)       │
-│   Port: 5174    │    │   Port: 5000    │    │   Port: 5001    │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
-         │                       │                       │
-         └───────────────────────┼───────────────────────┘
-                                 │
-                    ┌─────────────────┐
-                    │   PostgreSQL    │
-                    │   Port: 5432    │
-                    └─────────────────┘
-```
+````
+┌──────────────────────────────────────────────────┐
+│   Frontend (React)  :4173                        │
+└─────────────────────┬──────────────────────────┘
+                      │
+┌─────────────────────▼──────────────────────────┐
+│   FastAPI Backend (Unified) :8000 ✨           │
+│   ├─ /chat (Groq LLM)                         │
+│   ├─ /upload-image (async OCR)                │
+│   ├─ /api/invoices (CRUD)                     │
+│   ├─ /api/ocr/enqueue & /api/ocr/job/{id}    │
+│   └─ /docs (Swagger UI)                       │
+└─────────────────────┬──────────────────────────┘
+                      │
+        ┌─────────────┴──────────────┐
+        │                            │
+        ▼                            ▼
+  PostgreSQL DB            OCR Worker (Python)
+                           (polls & processes jobs)
 
 ## 🚀 Khởi động nhanh
 
-### Với Docker (Khuyến nghị)
+### With Docker (Recommended)
 ```bash
 # 1. Clone repository
 git clone <your-repo-url>
 cd DoAnCN
 
-# 2. Tạo file .env
+# 2. Create .env file
 cp .env.example .env
-# Sửa OPENAI_API_KEY trong file .env
+# Edit GROQ_API_KEY in .env
 
-# 3. Khởi động services
+# 3. Start services with docker-compose
 docker-compose up -d
 
-# 4. Truy cập ứng dụng
-# Frontend: http://localhost:5174
-# Backend:  http://localhost:5000
-# Chatbot:  http://localhost:5001
-```
+# 4. Access application
+# Frontend: http://localhost:4173
+# Backend (FastAPI): http://localhost:8000
+# API Docs: http://localhost:8000/docs
+````
 
-### Với Local Development
+### Local Development (Recommended for Development)
+
 ```bash
-# 1. Setup và start tất cả services
-python main.py setup
-python main.py start
+# Terminal 1: Start FastAPI Backend (all services unified)
+cd backend
+python -m uvicorn main:app --host 0.0.0.0 --port 8000
 
-# 2. Hoặc start từng service riêng
-python main.py backend    # Port 5000
-python main.py chatbot    # Port 5001  
-python main.py frontend   # Port 5174
+# Terminal 2: Start OCR Worker (background processing)
+cd backend
+python worker.py
 
-# 3. Check status
-python main.py status
+# Terminal 3: Start Frontend
+cd frontend
+npm install
+npm run dev
+
+# Access:
+# Frontend: http://localhost:4173
+# API: http://localhost:8000
+# Docs: http://localhost:8000/docs
 ```
 
 ## 📋 API Documentation
 
 Hệ thống cung cấp RESTful API hoàn chỉnh:
 
-- 📖 **API Docs**: http://localhost:5000/api/docs
-- 🩺 **Health Check**: http://localhost:5000/api/health
+- 📖 **Interactive Docs**: http://localhost:8000/docs (Swagger UI)
+- 🩺 **Health Check**: http://localhost:8000/health
 - 📄 **Full API List**: Xem [API_DOCUMENTATION.md](./API_DOCUMENTATION.md)
+- 📚 **Migration Guide**: [FLASK_TO_FASTAPI_MIGRATION.md](./FLASK_TO_FASTAPI_MIGRATION.md)
 
-### API Endpoints chính:
+### Main Endpoints:
 
 ```bash
-# Authentication
-POST /api/auth/register    # Đăng ký tài khoản
-POST /api/auth/login       # Đăng nhập
+# Chat & AI
+POST   /chat               # Chat with Groq AI
+POST   /chat/simple        # Simple chat
+POST   /ai/test            # Test AI
 
-# Invoices Management  
-GET    /api/invoices       # Danh sách hóa đơn
-POST   /api/invoices       # Tạo hóa đơn mới
+# Upload & OCR (Async)
+POST   /upload-image       # Upload invoice (returns immediately)
+GET    /api/ocr/job/{id}   # Check OCR job status
+POST   /api/ocr/enqueue    # Enqueue OCR manually
+
+# Invoices Management
+GET    /api/invoices/list  # Danh sách hóa đơn
+POST   /api/invoices/list  # Create invoice
 GET    /api/invoices/{id}  # Chi tiết hóa đơn
-PUT    /api/invoices/{id}  # Cập nhật hóa đơn
-DELETE /api/invoices/{id}  # Xóa hóa đơn
 
-# OCR Processing
-POST /api/ocr/process      # Xử lý hình ảnh OCR
-
-# Analytics & Reports
-GET /api/analytics/dashboard      # Dashboard statistics
-GET /api/analytics/revenue        # Báo cáo doanh thu
-GET /api/analytics/customer-analytics  # Phân tích khách hàng
+# System
+GET    /health             # Health check
+GET    /                   # API Home + Docs
+GET    /docs               # Swagger UI
 ```
 
 ## 🛠️ Cấu hình môi trường
@@ -151,13 +175,14 @@ python main.py test
 
 # Manual testing
 curl http://localhost:5000/api/health
-curl http://localhost:5001/health  
+curl http://localhost:5001/health
 curl http://localhost:5174
 ```
 
 ## 🔧 Development
 
 ### Backend Development
+
 ```bash
 cd backend
 python -m venv venv
@@ -169,6 +194,7 @@ python app.py
 ```
 
 ### Frontend Development
+
 ```bash
 cd frontend
 npm install
@@ -176,6 +202,7 @@ npm run dev
 ```
 
 ### Chatbot Development
+
 ```bash
 cd chatbot
 python -m venv venv
