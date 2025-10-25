@@ -120,6 +120,14 @@ except Exception as e:
     logger.warning(f"⚠️ Auth API router not available: {e}")
     auth_router = None
 
+# Import admin API router
+try:
+    from admin_api import admin_router
+    logger.info("✅ Admin API router initialized")
+except Exception as e:
+    logger.warning(f"⚠️ Admin API router not available: {e}")
+    admin_router = None
+
 # FastAPI app
 app = FastAPI(
     title="Invoice Chat Backend",
@@ -142,6 +150,11 @@ app.add_middleware(
 if auth_router:
     app.include_router(auth_router, tags=["Authentication"])
     logger.info("✅ Auth router included at /auth")
+
+# Include admin router
+if admin_router:
+    app.include_router(admin_router, tags=["Admin"])
+    logger.info("✅ Admin router included at /admin")
 
 # ===================== MODELS =====================
 
