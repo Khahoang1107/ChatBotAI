@@ -5,42 +5,90 @@ Provides PostgreSQL query functions for chatbot to access real invoice data
 
 import psycopg2
 from psycopg2.extras import RealDictCursor
+from psycopg2 import pool
 from typing import Dict, List, Optional, Any
 import logging
 from datetime import datetime
+import time
+import os
 
 logger = logging.getLogger(__name__)
 
 class DatabaseTools:
-    """Tools for querying PostgreSQL database"""
+    """Tools for querying PostgreSQL database with connection pooling"""
     
-    def __init__(self, connection_string: str = "postgresql://postgres:123@localhost:5432/ocr_database_new"):
-        """Initialize database connection"""
-        self.connection_string = connection_string
-        self.connection = None
+    def __init__(self, connection_string: str = None):
+        """Initialize database connection pool"""
+        if connection_string is None:
+            connection_string = os.getenv(
+                "DATABASE_URL", 
+                "postgresql://postgres:123@localhost:5432/ocr_database_new"
+            )
         
-    def connect(self):
-        """Establish database connection"""
+        self.connection_string = connection_string
+        self.connection_pool = None
+        self.max_retries = 3
+        self.retry_delay = 1.0  # seconds
+        
+        # Initialize connection pool
+        self._init_connection_pool()
+    
+    def _init_connection_pool(self):
+        """Initialize PostgreSQL connection pool"""
         try:
-            if not self.connection or self.connection.closed:
-                self.connection = psycopg2.connect(
-                    self.connection_string,
-                    cursor_factory=RealDictCursor
-                )
-                logger.info("✅ Database connection established")
-            return self.connection
+            self.connection_pool = pool.SimpleConnectionPool(
+                minconn=1,
+                maxconn=10,  # Maximum connections in pool
+                dsn=self.connection_string,
+                cursor_factory=RealDictCursor
+            )
+            logger.info("✅ Database connection pool initialized")
         except Exception as e:
-            logger.error(f"❌ Database connection failed: {e}")
+            logger.error(f"❌ Failed to initialize connection pool: {e}")
+            self.connection_pool = None
+    
+    def _get_connection_with_retry(self):
+        """Get connection from pool with retry logic"""
+        if not self.connection_pool:
+            logger.error("❌ Connection pool not initialized")
             return None
+        
+        for attempt in range(self.max_retries):
+            try:
+                conn = self.connection_pool.getconn()
+                # Test connection
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT 1")
+                return conn
+            except Exception as e:
+                logger.warning(f"❌ Connection attempt {attempt + 1} failed: {e}")
+                if attempt < self.max_retries - 1:
+                    time.sleep(self.retry_delay * (2 ** attempt))  # Exponential backoff
+                else:
+                    logger.error("❌ All connection attempts failed")
+                    return None
+    
+    def connect(self):
+        """Get database connection from pool"""
+        return self._get_connection_with_retry()
+    
+    def release_connection(self, conn):
+        """Return connection to pool"""
+        if self.connection_pool and conn:
+            try:
+                self.connection_pool.putconn(conn)
+            except Exception as e:
+                logger.warning(f"❌ Error releasing connection: {e}")
     
     def close(self):
-        """Close database connection"""
-        if self.connection and not self.connection.closed:
-            self.connection.close()
-            logger.info("Database connection closed")
+        """Close connection pool"""
+        if self.connection_pool:
+            self.connection_pool.closeall()
+            logger.info("Database connection pool closed")
     
     def get_all_invoices(self, limit: int = 50) -> List[Dict]:
         """Get all invoices from database"""
+        conn = None
         try:
             conn = self.connect()
             if not conn:
@@ -68,9 +116,13 @@ class DatabaseTools:
         except Exception as e:
             logger.error(f"❌ Error getting invoices: {e}")
             return []
+        finally:
+            if conn:
+                self.release_connection(conn)
     
     def search_invoices(self, query: str, limit: int = 20) -> List[Dict]:
         """Search invoices by keyword"""
+        conn = None
         try:
             conn = self.connect()
             if not conn:
@@ -107,9 +159,13 @@ class DatabaseTools:
         except Exception as e:
             logger.error(f"❌ Error searching invoices: {e}")
             return []
+        finally:
+            if conn:
+                self.release_connection(conn)
     
     def get_invoice_by_filename(self, filename: str) -> Optional[Dict]:
         """Get specific invoice by filename"""
+        conn = None
         try:
             conn = self.connect()
             if not conn:
@@ -143,9 +199,13 @@ class DatabaseTools:
         except Exception as e:
             logger.error(f"❌ Error getting invoice by filename: {e}")
             return None
+        finally:
+            if conn:
+                self.release_connection(conn)
     
     def get_statistics(self) -> Dict[str, Any]:
         """Get database statistics"""
+        conn = None
         try:
             conn = self.connect()
             if not conn:
@@ -194,9 +254,13 @@ class DatabaseTools:
         except Exception as e:
             logger.error(f"❌ Error getting statistics: {e}")
             return {}
+        finally:
+            if conn:
+                self.release_connection(conn)
     
     def get_buyer_summary(self, buyer_name: str) -> Dict[str, Any]:
         """Get summary for specific buyer"""
+        conn = None
         try:
             conn = self.connect()
             if not conn:
@@ -224,6 +288,9 @@ class DatabaseTools:
         except Exception as e:
             logger.error(f"❌ Error getting buyer summary: {e}")
             return {}
+        finally:
+            if conn:
+                self.release_connection(conn)
     
     def natural_language_query(self, query: str) -> Dict[str, Any]:
         """Process natural language query and return database results"""
@@ -271,96 +338,123 @@ class DatabaseTools:
     
     def create_ocr_job(self, job_id: str, filepath: str, filename: str, uploader: str = "unknown", user_id: str = "anonymous"):
         """Create OCR job in database"""
+        conn = None
         try:
             conn = self.connect()
-            cursor = conn.cursor()
+            if not conn:
+                return False
             
-            cursor.execute("""
-                INSERT INTO ocr_jobs (id, filepath, filename, status, created_at)
-                VALUES (%s, %s, %s, %s, NOW())
-            """, (job_id, filepath, filename, 'queued'))
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    INSERT INTO ocr_jobs (id, filepath, filename, status, created_at)
+                    VALUES (%s, %s, %s, %s, NOW())
+                """, (job_id, filepath, filename, 'queued'))
             
             conn.commit()
             logger.info(f"✅ OCR job created: {job_id}")
             return True
         except Exception as e:
             logger.error(f"❌ Error creating OCR job: {e}")
+            if conn:
+                conn.rollback()
             return False
+        finally:
+            if conn:
+                self.release_connection(conn)
     
     def get_ocr_job(self, job_id: str) -> Optional[Dict]:
         """Get OCR job status"""
+        conn = None
         try:
             conn = self.connect()
-            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            if not conn:
+                return None
             
-            cursor.execute("""
-                SELECT id, filepath, filename, status, result, error_message, invoice_id, created_at, completed_at
-                FROM ocr_jobs
-                WHERE id = %s
-            """, (job_id,))
-            
-            result = cursor.fetchone()
-            cursor.close()
-            return dict(result) if result else None
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT id, filepath, filename, status, result, error_message, invoice_id, created_at, completed_at
+                    FROM ocr_jobs
+                    WHERE id = %s
+                """, (job_id,))
+                
+                result = cursor.fetchone()
+                return dict(result) if result else None
         except Exception as e:
             logger.error(f"❌ Error getting OCR job: {e}")
             return None
+        finally:
+            if conn:
+                self.release_connection(conn)
     
     def get_queued_ocr_jobs(self, limit: int = 5) -> List[Dict]:
         """Get queued OCR jobs"""
+        conn = None
         try:
             conn = self.connect()
-            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            if not conn:
+                return []
             
-            cursor.execute("""
-                SELECT id, filepath, filename, status, created_at
-                FROM ocr_jobs
-                WHERE status = 'queued'
-                ORDER BY created_at ASC
-                LIMIT %s
-            """, (limit,))
-            
-            results = cursor.fetchall()
-            cursor.close()
-            return [dict(row) for row in results]
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT id, filepath, filename, status, created_at
+                    FROM ocr_jobs
+                    WHERE status = 'queued'
+                    ORDER BY created_at ASC
+                    LIMIT %s
+                """, (limit,))
+                
+                results = cursor.fetchall()
+                return [dict(row) for row in results]
         except Exception as e:
             logger.error(f"❌ Error getting queued jobs: {e}")
             return []
+        finally:
+            if conn:
+                self.release_connection(conn)
     
     def update_ocr_job(self, job_id: str, status: str, result: Optional[str] = None, error_message: Optional[str] = None, invoice_id: Optional[int] = None):
         """Update OCR job status"""
+        conn = None
         try:
             conn = self.connect()
-            cursor = conn.cursor()
+            if not conn:
+                return False
             
-            if status == 'completed':
-                cursor.execute("""
-                    UPDATE ocr_jobs
-                    SET status = %s, result = %s, invoice_id = %s, completed_at = NOW(), updated_at = NOW()
-                    WHERE id = %s
-                """, (status, result, invoice_id, job_id))
-            elif status == 'failed':
-                cursor.execute("""
-                    UPDATE ocr_jobs
-                    SET status = %s, error_message = %s, updated_at = NOW()
-                    WHERE id = %s
-                """, (status, error_message, job_id))
-            else:
-                cursor.execute("""
-                    UPDATE ocr_jobs
-                    SET status = %s, updated_at = NOW()
-                    WHERE id = %s
-                """, (status, job_id))
-            
-            conn.commit()
-            logger.info(f"✅ OCR job updated: {job_id} -> {status}")
-            return True
+            with conn.cursor() as cursor:
+                if status == 'completed':
+                    cursor.execute("""
+                        UPDATE ocr_jobs
+                        SET status = %s, result = %s, invoice_id = %s, completed_at = NOW(), updated_at = NOW()
+                        WHERE id = %s
+                    """, (status, result, invoice_id, job_id))
+                elif status == 'failed':
+                    cursor.execute("""
+                        UPDATE ocr_jobs
+                        SET status = %s, error_message = %s, updated_at = NOW()
+                        WHERE id = %s
+                    """, (status, error_message, job_id))
+                else:
+                    cursor.execute("""
+                        UPDATE ocr_jobs
+                        SET status = %s, updated_at = NOW()
+                        WHERE id = %s
+                    """, (status, job_id))
+                
+                conn.commit()
+                logger.info(f"✅ OCR job updated: {job_id} -> {status}")
+                return True
         except Exception as e:
             logger.error(f"❌ Error updating OCR job: {e}")
+            if conn:
+                conn.rollback()
             return False
+        finally:
+            if conn:
+                self.release_connection(conn)
     
     def execute_query(self, query: str, params: tuple = None) -> bool:
         """Execute a raw SQL query"""
+        conn = None
         try:
             conn = self.connect()
             if not conn:
@@ -377,7 +471,55 @@ class DatabaseTools:
             return True
         except Exception as e:
             logger.error(f"❌ Error executing query: {e}")
+            if conn:
+                conn.rollback()
             return False
+        finally:
+            if conn:
+                self.release_connection(conn)
+    
+    def health_check(self) -> Dict[str, Any]:
+        """Check database health and connection status"""
+        conn = None
+        try:
+            conn = self.connect()
+            if not conn:
+                return {
+                    "status": "unhealthy",
+                    "message": "Cannot establish database connection",
+                    "timestamp": datetime.utcnow().isoformat()
+                }
+            
+            with conn.cursor() as cursor:
+                # Test basic connectivity
+                cursor.execute("SELECT 1 as test")
+                result = cursor.fetchone()
+                
+                # Get basic stats
+                cursor.execute("SELECT COUNT(*) as user_count FROM users")
+                user_count = cursor.fetchone()['user_count']
+                
+                cursor.execute("SELECT COUNT(*) as invoice_count FROM invoices")
+                invoice_count = cursor.fetchone()['invoice_count']
+                
+                return {
+                    "status": "healthy",
+                    "message": "Database connection successful",
+                    "user_count": user_count,
+                    "invoice_count": invoice_count,
+                    "timestamp": datetime.utcnow().isoformat()
+                }
+                
+        except Exception as e:
+            logger.error(f"❌ Database health check failed: {e}")
+            return {
+                "status": "unhealthy",
+                "message": f"Database health check failed: {str(e)}",
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        finally:
+            if conn:
+                self.release_connection(conn)
 
 # Global instance
 _db_tools_instance = None

@@ -367,5 +367,4 @@ async def delete_user(
         )
 
 # Export router để import vào main.py
-__all__ = ["admin_router"]</content>
-<parameter name="filePath">F:\DoAnCN\backend\admin_api.py
+__all__ = ["admin_router"]

@@ -265,7 +265,90 @@ class TrainingDataClient:
         self._cache.clear()
         self._last_cache_update.clear()
         logger.info("Đã xóa cache training data")
-
+    
+    def submit_user_correction(self, 
+                              original_text: str, 
+                              corrected_amount: str, 
+                              invoice_type: str = "general",
+                              user_id: str = "anonymous") -> bool:
+        """
+        Submit user correction for amount recognition to improve AI training
+        
+        Args:
+            original_text: The OCR text where the amount was found
+            corrected_amount: The correct amount the user specified
+            invoice_type: Type of invoice (momo, electricity, traditional)
+            user_id: ID of the user making the correction
+            
+        Returns:
+            bool: True if correction was submitted successfully
+        """
+        try:
+            payload = {
+                'original_text': original_text,
+                'corrected_amount': corrected_amount,
+                'invoice_type': invoice_type,
+                'user_id': user_id,
+                'correction_type': 'dash_amount_recognition',
+                'timestamp': datetime.now().isoformat()
+            }
+            
+            response = self.session.post(
+                f"{self.base_url}/user-corrections",
+                json=payload,
+                timeout=30
+            )
+            
+            response.raise_for_status()
+            data = response.json()
+            
+            if data.get('success'):
+                logger.info(f"✅ User correction submitted successfully for amount: {corrected_amount}")
+                # Clear cache to force refresh of patterns
+                self.clear_cache()
+                return True
+            else:
+                logger.error(f"❌ Failed to submit user correction: {data}")
+                return False
+                
+        except requests.exceptions.RequestException as e:
+            logger.error(f"❌ Network error submitting user correction: {str(e)}")
+            return False
+        except Exception as e:
+            logger.error(f"❌ Error submitting user correction: {str(e)}")
+            return False
+    
+    def get_dash_patterns(self) -> Optional[List[Dict[str, Any]]]:
+        """
+        Get learned dash amount patterns from training data
+        
+        Returns:
+            List of dash pattern objects with confidence scores
+        """
+        try:
+            response = self.session.get(
+                f"{self.base_url}/dash-patterns",
+                timeout=30
+            )
+            
+            response.raise_for_status()
+            data = response.json()
+            
+            if data.get('success'):
+                patterns = data.get('patterns', [])
+                logger.info(f"✅ Retrieved {len(patterns)} dash patterns")
+                return patterns
+            else:
+                logger.error(f"❌ Failed to get dash patterns: {data}")
+                return None
+                
+        except requests.exceptions.RequestException as e:
+            logger.error(f"❌ Network error getting dash patterns: {str(e)}")
+            return None
+        except Exception as e:
+            logger.error(f"❌ Error getting dash patterns: {str(e)}")
+            return None
+        
 
 class InvoicePatternMatcher:
     """
@@ -306,11 +389,27 @@ class InvoicePatternMatcher:
     def extract_invoice_info(self, text: str) -> Dict[str, Any]:
         """
         Extract thông tin hóa đơn từ text dựa trên patterns đã học
+        Enhanced with dash amount recognition
         """
         extracted_info = {}
         
+        # ⭐ HIGH PRIORITY: Check for dash-indicated amounts first
+        dash_amount = self._extract_dash_amount(text)
+        if dash_amount:
+            extracted_info['total_amount'] = {
+                'values': [dash_amount['amount']],
+                'best_match': dash_amount['amount'],
+                'confidence': dash_amount['confidence'],
+                'pattern_type': 'dash_recognition'
+            }
+            logger.info(f"✅ Found dash-indicated amount: {dash_amount['amount']} (confidence: {dash_amount['confidence']})")
+        
         # Duyệt qua tất cả field patterns đã học
         for field_name, patterns in self.field_patterns.items():
+            # Skip total_amount if we already found it via dash recognition
+            if field_name == 'total_amount' and 'total_amount' in extracted_info:
+                continue
+                
             values = []
             
             for pattern_info in patterns:
@@ -334,42 +433,78 @@ class InvoicePatternMatcher:
         
         return extracted_info
     
-    def suggest_template_type(self, extracted_info: Dict[str, Any]) -> str:
+    def _extract_dash_amount(self, text: str) -> Optional[Dict[str, Any]]:
         """
-        Gợi ý loại template dựa trên thông tin đã extract
+        Extract amount from dash-indicated patterns with learned corrections
+        
+        Returns:
+            Dict with amount, confidence, and pattern info, or None if not found
         """
-        field_names = list(extracted_info.keys())
+        import re
         
-        # Tìm templates tương tự
-        similar_templates = self.training_client.search_similar_templates(field_names)
+        # Get learned dash patterns from training data
+        dash_patterns = self.training_client.get_dash_patterns()
         
-        if similar_templates:
-            # Đếm loại template phổ biến nhất
-            template_types = {}
-            for template in similar_templates:
-                template_type = template.get('template_type', 'unknown')
-                template_types[template_type] = template_types.get(template_type, 0) + 1
+        # Default dash patterns if no learned patterns available
+        if not dash_patterns:
+            dash_patterns = [
+                {
+                    'pattern': r'(?:^\s*-\s*|-\s+)([0-9,\.]+)(?:\s*(?:vnd|đ|vnđ))?',
+                    'confidence': 0.9,
+                    'description': 'Line starting with dash'
+                },
+                {
+                    'pattern': r'(\d+(?:,\d{3})*(?:\.\d{2})?)(?:\s*(?:vnd|đ|vnđ))?\s*$',
+                    'confidence': 0.7,
+                    'description': 'Amount at end of line'
+                }
+            ]
+        
+        best_match = None
+        highest_confidence = 0.0
+        
+        for pattern_info in dash_patterns:
+            pattern = pattern_info.get('pattern', '')
+            base_confidence = pattern_info.get('confidence', 0.5)
             
-            # Trả về loại phổ biến nhất
-            return max(template_types.items(), key=lambda x: x[1])[0]
+            try:
+                match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
+                if match:
+                    amount_str = match.group(1).strip()
+                    
+                    # Clean up the amount string
+                    amount_str = amount_str.replace(' ', '').replace('_', '')
+                    
+                    # Parse amount
+                    try:
+                        if ',' in amount_str and '.' in amount_str:
+                            numeric_value = float(amount_str.replace(',', ''))
+                        else:
+                            numeric_value = float(amount_str.replace(',', '').replace('.', ''))
+                        
+                        # Validate reasonable amount
+                        if 100 <= numeric_value <= 100000000:
+                            # Boost confidence if this matches a learned correction
+                            final_confidence = base_confidence
+                            
+                            # Check if this pattern has been validated by user corrections
+                            if pattern_info.get('validated_by_corrections', 0) > 0:
+                                final_confidence = min(final_confidence + 0.2, 1.0)
+                            
+                            if final_confidence > highest_confidence:
+                                highest_confidence = final_confidence
+                                best_match = {
+                                    'amount': f"{numeric_value:,.0f} VND",
+                                    'numeric_value': numeric_value,
+                                    'confidence': final_confidence,
+                                    'pattern': pattern,
+                                    'description': pattern_info.get('description', 'Dash pattern')
+                                }
+                                
+                    except (ValueError, OverflowError):
+                        continue
+                        
+            except re.error:
+                continue
         
-        return 'unknown'
-    
-    def get_field_suggestions(self, partial_field_name: str) -> List[str]:
-        """
-        Gợi ý field names dựa trên input từng phần
-        """
-        suggestions = []
-        
-        for field_name in self.common_fields:
-            if partial_field_name.lower() in field_name.lower():
-                suggestions.append(field_name)
-        
-        return suggestions[:10]  # Giới hạn 10 gợi ý
-    
-    def refresh_patterns(self):
-        """
-        Refresh patterns từ backend
-        """
-        self.training_client.clear_cache()
-        self._load_patterns()
+        return best_match

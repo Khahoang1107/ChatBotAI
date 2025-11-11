@@ -180,120 +180,103 @@ class GroqDatabaseTools:
                 "error": str(e)
             }
     
-    def save_invoice_from_ocr(self, ocr_data: Dict[str, Any]) -> Dict[str, Any]:
+    def export_to_excel(self, filter_type: str = "all", start_date: str = None, end_date: str = None, invoice_type: str = None) -> Dict[str, Any]:
         """
-        Lưu hóa đơn từ dữ liệu OCR đã extract
+        Xuất danh sách hóa đơn ra file Excel
         
         Args:
-            ocr_data: Dữ liệu OCR đã extract từ extract_invoice_fields()
+            filter_type: Loại filter ("all", "today", "date_range", "type")
+            start_date: Ngày bắt đầu (YYYY-MM-DD) - cho date_range
+            end_date: Ngày kết thúc (YYYY-MM-DD) - cho date_range  
+            invoice_type: Loại hóa đơn - cho type filter
         
         Returns:
-            Save result
+            Thông tin về file Excel đã tạo
         """
         try:
-            # Validate required fields
-            if not ocr_data.get('invoice_code'):
+            # Lấy dữ liệu theo filter
+            if filter_type == "all":
+                invoices = self.db_tools.get_all_invoices(limit=1000)
+                filter_desc = "tất cả"
+            elif filter_type == "today":
+                from datetime import datetime
+                today = datetime.now().strftime("%Y-%m-%d")
+                all_invoices = self.db_tools.get_all_invoices(limit=1000)
+                invoices = []
+                for inv in all_invoices:
+                    created_str = str(inv.get('created_at', ''))
+                    if created_str.startswith(today):
+                        invoices.append(inv)
+                filter_desc = f"hôm nay ({today})"
+            elif filter_type == "date_range" and start_date and end_date:
+                all_invoices = self.db_tools.get_all_invoices(limit=1000)
+                invoices = []
+                for inv in all_invoices:
+                    created_str = str(inv.get('created_at', ''))
+                    inv_date = created_str.split('T')[0] if 'T' in created_str else created_str
+                    if start_date <= inv_date <= end_date:
+                        invoices.append(inv)
+                filter_desc = f"từ {start_date} đến {end_date}"
+            elif filter_type == "type" and invoice_type:
+                all_invoices = self.db_tools.get_all_invoices(limit=1000)
+                invoices = [inv for inv in all_invoices if inv.get('invoice_type') == invoice_type]
+                filter_desc = f"loại {invoice_type}"
+            else:
                 return {
                     "success": False,
-                    "error": "Missing invoice_code"
+                    "error": "Invalid filter parameters"
                 }
             
-            # Prepare invoice data for database
-            invoice_data = {
-                "filename": ocr_data.get('filename', 'ocr_upload.jpg'),
-                "invoice_code": ocr_data.get('invoice_code'),
-                "invoice_type": ocr_data.get('invoice_type', 'general'),
-                "buyer_name": ocr_data.get('buyer_name', 'Unknown'),
-                "seller_name": ocr_data.get('seller_name', 'Unknown'),
-                "total_amount": ocr_data.get('total_amount', '0 VND'),
-                "confidence_score": ocr_data.get('confidence_score', 0.5),
-                "raw_text": ocr_data.get('raw_text', ''),
-                "invoice_date": ocr_data.get('date', datetime.now().strftime("%d/%m/%Y")),
-                "buyer_tax_id": ocr_data.get('buyer_tax_id', ''),
-                "seller_tax_id": ocr_data.get('seller_tax_id', ''),
-                "buyer_address": ocr_data.get('buyer_address', ''),
-                "seller_address": ocr_data.get('seller_address', ''),
-                "items": ocr_data.get('items', '[]'),
-                "currency": ocr_data.get('currency', 'VND'),
-                "subtotal": ocr_data.get('subtotal', 0),
-                "tax_amount": ocr_data.get('tax_amount', 0),
-                "tax_percentage": ocr_data.get('tax_percentage', 0),
-                "total_amount_value": ocr_data.get('total_amount_value', 0),
-                "transaction_id": ocr_data.get('transaction_id', ''),
-                "payment_method": ocr_data.get('payment_method', ''),
-                "payment_account": ocr_data.get('payment_account', ''),
-                "invoice_time": ocr_data.get('invoice_time', None),
-                "due_date": ocr_data.get('due_date', None)
+            if not invoices:
+                return {
+                    "success": False,
+                    "error": f"Không có hóa đơn nào cho filter: {filter_desc}"
+                }
+            
+            # Tạo file Excel
+            from export_service import get_export_service
+            export_service = get_export_service(self.db_tools)
+            excel_bytes = export_service.export_to_excel(invoices)
+            
+            if not excel_bytes:
+                return {
+                    "success": False,
+                    "error": "Không thể tạo file Excel"
+                }
+            
+            # Lưu file tạm thời và trả về URL
+            import tempfile
+            import os
+            from datetime import datetime
+            
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"invoices_{filter_type}_{timestamp}.xlsx"
+            
+            # Tạo thư mục temp nếu chưa có
+            temp_dir = os.path.join(os.getcwd(), "temp_exports")
+            os.makedirs(temp_dir, exist_ok=True)
+            
+            file_path = os.path.join(temp_dir, filename)
+            
+            with open(file_path, 'wb') as f:
+                f.write(excel_bytes)
+            
+            # Tạo URL để download (giả định server chạy trên localhost:8000)
+            download_url = f"http://localhost:8000/api/export/download/{filename}"
+            
+            return {
+                "success": True,
+                "message": f"Đã xuất {len(invoices)} hóa đơn {filter_desc} ra file Excel",
+                "filename": filename,
+                "download_url": download_url,
+                "file_size": len(excel_bytes),
+                "invoice_count": len(invoices)
             }
             
-            # Save to database using db_tools
-            conn = self.db_tools.connect()
-            if not conn:
-                return {
-                    "success": False,
-                    "error": "Cannot connect to database"
-                }
-            
-            with conn.cursor() as cursor:
-                cursor.execute("""
-                    INSERT INTO invoices 
-                    (filename, invoice_code, invoice_type, buyer_name, seller_name,
-                     total_amount, confidence_score, raw_text, invoice_date,
-                     buyer_tax_id, seller_tax_id, buyer_address, seller_address,
-                     items, currency, subtotal, tax_amount, tax_percentage,
-                     total_amount_value, transaction_id, payment_method, 
-                     payment_account, invoice_time, due_date, created_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 
-                           %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    RETURNING id
-                """, (
-                    invoice_data['filename'],
-                    invoice_data['invoice_code'],
-                    invoice_data['invoice_type'],
-                    invoice_data['buyer_name'],
-                    invoice_data['seller_name'],
-                    invoice_data['total_amount'],
-                    invoice_data['confidence_score'],
-                    invoice_data['raw_text'],
-                    invoice_data['invoice_date'],
-                    invoice_data['buyer_tax_id'],
-                    invoice_data['seller_tax_id'],
-                    invoice_data['buyer_address'],
-                    invoice_data['seller_address'],
-                    invoice_data['items'],
-                    invoice_data['currency'],
-                    invoice_data['subtotal'],
-                    invoice_data['tax_amount'],
-                    invoice_data['tax_percentage'],
-                    invoice_data['total_amount_value'],
-                    invoice_data['transaction_id'],
-                    invoice_data['payment_method'],
-                    invoice_data['payment_account'],
-                    invoice_data['invoice_time'],
-                    invoice_data['due_date'],
-                    datetime.now()
-                ))
-                result = cursor.fetchone()
-                if result:
-                    invoice_id = result[0]
-                    conn.commit()
-                    return {
-                        "success": True,
-                        "message": f"Invoice saved successfully with ID: {invoice_id}",
-                        "invoice_id": invoice_id,
-                        "invoice_code": invoice_data['invoice_code']
-                    }
-                else:
-                    conn.commit()
-                    return {
-                        "success": False,
-                        "error": "Invoice inserted but RETURNING failed"
-                    }
-                    
         except Exception as e:
             return {
                 "success": False,
-                "error": f"Failed to save invoice: {str(e)}"
+                "error": f"Lỗi khi export Excel: {str(e)}"
             }
     
     def get_tools_description(self) -> List[Dict[str, Any]]:
@@ -395,6 +378,24 @@ class GroqDatabaseTools:
                     },
                     "required": ["ocr_data"]
                 }
+            },
+            {
+                "name": "export_to_excel",
+                "description": "Xuất danh sách hóa đơn ra file Excel với các tùy chọn filter",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "filter_type": {
+                            "type": "string", 
+                            "description": "Loại filter: 'all' (tất cả), 'today' (hôm nay), 'date_range' (khoảng thời gian), 'type' (theo loại)",
+                            "enum": ["all", "today", "date_range", "type"]
+                        },
+                        "start_date": {"type": "string", "description": "Ngày bắt đầu (YYYY-MM-DD) - chỉ dùng với date_range"},
+                        "end_date": {"type": "string", "description": "Ngày kết thúc (YYYY-MM-DD) - chỉ dùng với date_range"},
+                        "invoice_type": {"type": "string", "description": "Loại hóa đơn - chỉ dùng với type filter"}
+                    },
+                    "required": ["filter_type"]
+                }
             }
         ]
     
@@ -432,6 +433,8 @@ class GroqDatabaseTools:
                     "error": "ocr_data parameter is required for save_invoice_from_ocr tool"
                 }
             return self.save_invoice_from_ocr(**kwargs)
+        elif tool_name == "export_to_excel":
+            return self.export_to_excel(**kwargs)
         else:
             return {
                 "success": False,

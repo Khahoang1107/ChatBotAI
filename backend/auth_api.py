@@ -32,22 +32,20 @@ SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-change-this-in-production"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
-from passlib.context import CryptContext
 from jose import JWTError, jwt
+from fastapi.security import HTTPBearer
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 security = HTTPBearer()
+
+from utils.logger import setup_logger
+
+# Setup logger
+logger = setup_logger('auth_api')
 
 # Database tools
 db_tools = get_database_tools()
 
 # Auth utilities
-def get_password_hash(password):
-    return pwd_context.hash(password)
-
-def verify_password(plain_password, hashed_password):
-    return pwd_context.verify(plain_password, hashed_password)
-
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     to_encode = data.copy()
     if expires_delta:
@@ -62,7 +60,7 @@ def authenticate_user(db: Session, username: str, password: str):
     user = db.query(User).filter(User.username == username).first()
     if not user:
         return False
-    if not verify_password(password, user.password_hash):
+    if not user.verify_password(password):
         return False
     return user
 
@@ -76,14 +74,27 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
         payload = jwt.decode(credentials.credentials, SECRET_KEY, algorithms=[ALGORITHM])
         email: str = payload.get("sub")  # Changed from username to email
         if email is None:
+            logger.warning("❌ JWT token missing email in payload")
             raise credentials_exception
-    except JWTError:
+    except JWTError as e:
+        logger.warning(f"❌ JWT decode error: {str(e)}")
         raise credentials_exception
 
     # Use database tools directly
+    if not db_tools:
+        logger.error("❌ Database tools not available")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database service unavailable"
+        )
+
     conn = db_tools.connect()
     if not conn:
-        raise credentials_exception
+        logger.error("❌ Database connection failed")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database connection failed"
+        )
 
     try:
         with conn.cursor() as cursor:
@@ -94,23 +105,28 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
             result = cursor.fetchone()
 
             if not result:
+                logger.warning(f"❌ User not found in database: {email}")
                 raise credentials_exception
 
-            # Create user object from result
+            # Create user object from result (using dict keys since RealDictCursor is used)
             user = User(
-                id=result[0],
-                username=result[1],
-                email=result[2],
+                id=result['id'],
+                username=result['username'],
+                email=result['email'],
                 password_hash="",  # Not needed for response
-                full_name=result[3],
-                is_active=result[4],
-                is_admin=result[5],
-                created_at=result[6],
-                last_login=result[7]
+                full_name=result['full_name'],
+                is_active=result['is_active'],
+                is_admin=result['is_admin'],
+                created_at=result['created_at'],
+                last_login=result['last_login']
             )
+            logger.info(f"✅ User authenticated: {email}")
             return user
 
+    except HTTPException:
+        raise
     except Exception as e:
+        logger.error(f"❌ Database error for user {email}: {str(e)}", exc_info=True)
         raise credentials_exception
 
 # Tạo router cho auth endpoints
@@ -156,9 +172,19 @@ async def register_user(user: UserCreate):
     Tạo tài khoản mới với thông tin được cung cấp.
     """
     try:
+        logger.info(f"📝 Registration attempt for email: {user.email}")
+
         # Check if user already exists
+        if not db_tools:
+            logger.error("❌ Database tools not available")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Database service unavailable"
+            )
+
         conn = db_tools.connect()
         if not conn:
+            logger.error("❌ Database connection failed")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Database connection failed"
@@ -185,15 +211,20 @@ async def register_user(user: UserCreate):
                 (username, user.email)
             )
             if cursor.fetchone():
+                logger.warning(f"❌ Registration failed: User already exists - {user.email}")
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="Username hoặc email đã tồn tại"
                 )
 
             # Create new user
-            from passlib.context import CryptContext
-            pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-            password_hash = pwd_context.hash(user.password)
+            from models.user import User
+            user_obj = User(
+                username=username,
+                email=user.email,
+                full_name=user.full_name
+            )
+            user_obj.set_password(user.password)  # Use User model's method (now Argon2)
 
             cursor.execute("""
                 INSERT INTO users (username, email, password_hash, full_name, created_at)
@@ -202,7 +233,7 @@ async def register_user(user: UserCreate):
             """, (
                 username,
                 user.email,
-                password_hash,
+                user_obj.password_hash,  # Use the hashed password from User model
                 user.full_name,
                 datetime.utcnow()
             ))
@@ -210,6 +241,7 @@ async def register_user(user: UserCreate):
             result = cursor.fetchone()
             conn.commit()
 
+            logger.info(f"✅ Registration successful for user: {user.email}")
             return UserResponse(
                 id=result['id'],
                 username=result['username'],
@@ -224,11 +256,12 @@ async def register_user(user: UserCreate):
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"❌ Registration error for {user.email}: {str(e)}", exc_info=True)
         if 'conn' in locals() and conn:
             conn.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Lỗi server: {str(e)}"
+            detail="Lỗi server nội bộ"
         )
 
 @auth_router.post(
@@ -276,10 +309,20 @@ async def login_user(user_credentials: UserLogin):
     Xác thực thông tin đăng nhập và trả về JWT token.
     """
     try:
+        logger.info(f"🔐 Login attempt for email: {user_credentials.email}")
+
+        if not db_tools:
+            logger.error("❌ Database tools not available")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Database service unavailable"
+            )
+
         conn = db_tools.connect()
         if not conn:
+            logger.error("❌ Database connection failed")
             raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Database connection failed"
             )
 
@@ -292,19 +335,21 @@ async def login_user(user_credentials: UserLogin):
 
             result = cursor.fetchone()
             if not result:
+                logger.warning(f"❌ Login failed: User not found - {user_credentials.email}")
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Email hoặc mật khẩu không đúng",  # Changed from "Tên đăng nhập"
                     headers={"WWW-Authenticate": "Bearer"},
                 )
 
-            # Verify password
-            from passlib.context import CryptContext
-            pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-            if not pwd_context.verify(user_credentials.password, result['password_hash']):
+            # Verify password using User model (now Argon2)
+            from models.user import User
+            user_obj = User(password_hash=result['password_hash'])
+            if not user_obj.verify_password(user_credentials.password):
+                logger.warning(f"❌ Login failed: Invalid password - {user_credentials.email}")
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Email hoặc mật khẩu không đúng",  # Changed from "Tên đăng nhập"
+                    detail="Email hoặc mật khẩu không đúng",
                     headers={"WWW-Authenticate": "Bearer"},
                 )
 
@@ -332,6 +377,7 @@ async def login_user(user_credentials: UserLogin):
                 last_login=result['last_login']
             )
 
+            logger.info(f"✅ Login successful for user: {user_credentials.email}")
             return TokenResponse(
                 access_token=access_token,
                 token_type="bearer",
@@ -341,9 +387,10 @@ async def login_user(user_credentials: UserLogin):
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"❌ Login error for {user_credentials.email}: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Lỗi server: {str(e)}"
+            detail="Lỗi server nội bộ"
         )
 
 @auth_router.get(
@@ -391,13 +438,13 @@ async def login_user_get(email: str, password: str):
                     headers={"WWW-Authenticate": "Bearer"},
                 )
 
-            # Verify password
-            from passlib.context import CryptContext
-            pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-            if not pwd_context.verify(user_credentials.password, result['password_hash']):
+            # Verify password using User model (now Argon2)
+            from models.user import User
+            user_obj = User(password_hash=result['password_hash'])
+            if not user_obj.verify_password(user_credentials.password):
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Email hoặc mật khẩu không đúng",  # Changed from "Tên đăng nhập"
+                    detail="Email hoặc mật khẩu không đúng",
                     headers={"WWW-Authenticate": "Bearer"},
                 )
 
@@ -530,5 +577,17 @@ async def verify_token(token: str):
             "timestamp": datetime.utcnow().isoformat()
         }
 
-# Export router để import vào main.py
-__all__ = ["auth_router"]
+@auth_router.post(
+    "/signup",
+    response_model=UserResponse,
+    summary="Đăng ký tài khoản mới (alias)",
+    description="Alias cho /auth/register endpoint",
+    response_description="Thông tin tài khoản vừa tạo"
+)
+async def signup_user(user: UserCreate):
+    """
+    📝 Đăng ký user mới (alias cho register)
+
+    Tạo tài khoản mới với thông tin được cung cấp.
+    """
+    return await register_user(user)

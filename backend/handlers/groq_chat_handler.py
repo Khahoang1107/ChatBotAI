@@ -78,14 +78,16 @@ class GroqChatHandler:
 
 Nhiệm vụ:
 1. Phân tích yêu cầu của người dùng
-2. SỬ DỤNG các tools có sẵn để lấy dữ liệu từ database HOẶC lưu dữ liệu
+2. CHỈ SỬ DỤNG TOOLS khi người dùng YÊU CẦU THÔNG TIN CỤ THỂ từ database
 3. Xử lý, phân tích dữ liệu
 4. Trả lời chính xác và hữu ích
 
 Quy tắc QUAN TRỌNG:
-- Luôn gọi tools để lấy dữ liệu thực tế (đừng đoán)
-- Khi cần lấy dữ liệu, hãy nói: "Tôi sẽ sử dụng tool [tool_name] để..."
+- Với câu chào hỏi đơn giản ("hi", "hello", "chào"): Trả lời thân thiện, giới thiệu chức năng
+- Với câu hỏi về khả năng ("bạn có thể làm gì"): Liệt kê tools có sẵn
+- CHỈ KHI người dùng yêu cầu dữ liệu cụ thể: "xem hóa đơn", "lấy danh sách", "tìm kiếm", "thống kê" → mới dùng tools
 - Khi người dùng muốn LƯU HÓA ĐƠN từ OCR, hãy sử dụng tool save_invoice_from_ocr
+- Khi người dùng muốn XUẤT FILE EXCEL, hãy sử dụng tool export_to_excel
 - Sau khi gọi tool, phân tích kết quả và trả lời
 - Trả lời bằng Tiếng Việt
 - Luôn cung cấp dữ liệu thực từ database
@@ -95,17 +97,37 @@ XỬ LÝ LỆNH LƯU HÓA ĐƠN:
 - Tool này cần dữ liệu OCR đã extract (invoice_code, buyer_name, total_amount, etc.)
 - Nếu chưa có dữ liệu OCR, hãy hỏi người dùng upload ảnh trước
 
+XỬ LÝ LỆNH XUẤT EXCEL:
+- Khi người dùng nói "xuất excel", "export excel", "download excel", "tải file excel" -> sử dụng tool export_to_excel
+- Tool này sẽ tạo file Excel và trả về URL để download
+- Các tùy chọn filter: "all" (tất cả), "today" (hôm nay), "date_range" (khoảng thời gian), "type" (theo loại)
+- Sau khi export thành công, cung cấp URL download cho người dùng
+
+QUAN TRỌNG - THAM SỐ TOOLS:
+- Khi gọi tools, đảm bảo các tham số có đúng kiểu dữ liệu:
+  - limit: phải là số nguyên (integer), không phải chuỗi
+  - invoice_id: phải là số nguyên (integer), không phải chuỗi
+  - start_date, end_date: phải là chuỗi định dạng YYYY-MM-DD
+- Ví dụ: get_all_invoices(limit=10) - limit là số 10, không phải "10"
+
 Các tools có sẵn:{tools_desc}
 
 CÁCH SỬ DỤNG: Khi bạn cần lấy dữ liệu, hãy nói rõ:
-1. "Tôi sẽ lấy dữ liệu bằng tool: [tool_name]"
+1. "Tôi sẽ lấy dữ liệu bằng tool: [tool_name] với tham số [params]"
 2. Mô tả kết quả bạn nhận được
 3. Trả lời câu hỏi dựa trên dữ liệu
 
 Đối với lưu hóa đơn:
 1. "Tôi sẽ lưu hóa đơn bằng tool: save_invoice_from_ocr"
 2. Mô tả kết quả lưu trữ
-3. Thông báo thành công cho người dùng"""
+3. Thông báo thành công cho người dùng
+
+Đối với xuất Excel:
+1. "Tôi sẽ xuất file Excel bằng tool: export_to_excel"
+2. Mô tả kết quả export (số lượng hóa đơn, filter được áp dụng)
+3. Cung cấp URL download: "Bạn có thể tải file Excel tại: [download_url]"
+
+QUAN TRỌNG: Đừng gọi tools cho câu chào hỏi hoặc câu hỏi chung chung!"""
     
     async def chat(self, message: str, user_id: str = 'default') -> Dict[str, Any]:
         """
@@ -119,6 +141,15 @@ CÁCH SỬ DỤNG: Khi bạn cần lấy dữ liệu, hãy nói rõ:
             Chat response with metadata
         """
         try:
+            # Check if Groq client is available
+            if not self.client:
+                return {
+                    "message": "⚠️ Groq AI chưa được cấu hình. Vui lòng thêm GROQ_API_KEY vào file .env",
+                    "type": "error",
+                    "method": "mock",
+                    "error": "GROQ_API_KEY not configured",
+                    "timestamp": datetime.now().isoformat()
+                }
             # Analyze sentiment
             sentiment, sentiment_confidence = ('neutral', 0.5)
             if self.sentiment_service:
@@ -151,13 +182,35 @@ CÁCH SỬ DỤNG: Khi bạn cần lấy dữ liệu, hãy nói rõ:
             else:
                 tools_description = []
             
-            # Tạo message cho Groq với tools
+            # Simple intent detection - don't use tools for greetings or general questions
+            message_lower = message.lower().strip()
+            conversational_keywords = [
+                'hi', 'hello', 'chào', 'xin chào', 'chào bạn', 'hey', 'alo',
+                'bạn có thể', 'bạn làm gì', 'giúp gì', 'làm được gì', 'có thể làm gì',
+                'tôi cần', 'giúp tôi', 'hỗ trợ', 'thank', 'cảm ơn', 'thanks',
+                'tạm biệt', 'bye', 'goodbye', 'tại sao', 'sao', 'vì sao'
+            ]
+            
+            is_conversational = any(keyword in message_lower for keyword in conversational_keywords)
+            data_request_keywords = [
+                'xem', 'lấy', 'hiển thị', 'danh sách', 'list', 'tìm', 'search', 'thống kê',
+                'stats', 'báo cáo', 'lưu', 'save', 'xóa', 'delete', 'sửa', 'edit', 'update'
+            ]
+            is_data_request = any(keyword in message_lower for keyword in data_request_keywords)
+            
+            # Only use tools if it's clearly a data request AND not conversational
+            use_tools = is_data_request and not is_conversational
+            
+            logger.info(f"Intent detection: conversational={is_conversational}, data_request={is_data_request}, use_tools={use_tools}")
+            
+            # Tạo message cho Groq với tools (chỉ khi cần)
             response = await self._groq_with_tools(
                 message=message,
                 user_id=user_id,
-                tools_description=tools_description,
+                tools_description=tools_description if use_tools else [],
                 sentiment=sentiment,
-                conversation_context=conversation_context
+                conversation_context=conversation_context,
+                force_no_tools=not use_tools
             )
             
             # Adjust response based on sentiment
@@ -328,6 +381,8 @@ CÁCH SỬ DỤNG: Khi bạn cần lấy dữ liệu, hãy nói rõ:
                                 result = self.groq_tools.save_invoice_from_ocr(ocr_data=ocr_data)
                             else:
                                 result = {"success": False, "error": "Không có dữ liệu OCR gần đây. Vui lòng upload ảnh hóa đơn trước."}
+                        elif tool_name == "export_to_excel":
+                            result = self.groq_tools.export_to_excel(filter_type="all")
                         else:
                             result = self.groq_tools.call_tool(tool_name)
                         
@@ -354,7 +409,8 @@ CÁCH SỬ DỤNG: Khi bạn cần lấy dữ liệu, hãy nói rõ:
             yield f"[ERROR] {str(e)}"
     
     async def _groq_with_tools(self, message: str, user_id: str, tools_description: List[Dict], 
-                              sentiment: str = 'neutral', conversation_context: List[Dict] = None) -> Dict[str, Any]:
+                              sentiment: str = 'neutral', conversation_context: List[Dict] = None, 
+                              force_no_tools: bool = False) -> Dict[str, Any]:
         """
         Groq gọi tools thông qua Groq Function Calling
         
@@ -409,14 +465,24 @@ CÁCH SỬ DỤNG: Khi bạn cần lấy dữ liệu, hãy nói rõ:
                 for msg in self.conversation_history.get(user_id, [])[-10:]:
                     messages.append(msg)
                 
-                # Call Groq with tools
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=messages,
-                    tools=groq_tools_format if groq_tools_format else None,
-                    temperature=0.7,
-                    max_tokens=1000
-                )
+                # Call Groq with tools (only if not forced to skip tools)
+                if force_no_tools or not groq_tools_format:
+                    # Skip tools entirely
+                    response = self.client.chat.completions.create(
+                        model=self.model,
+                        messages=messages,
+                        temperature=0.7,
+                        max_tokens=1000
+                    )
+                else:
+                    # Use tools
+                    response = self.client.chat.completions.create(
+                        model=self.model,
+                        messages=messages,
+                        tools=groq_tools_format,
+                        temperature=0.7,
+                        max_tokens=1000
+                    )
                 
                 # Get response
                 assistant_message = response.choices[0].message
@@ -430,14 +496,35 @@ CÁCH SỬ DỤNG: Khi bạn cần lấy dữ liệu, hãy nói rõ:
                     "content": groq_response_text
                 })
                 
-                # Check if Groq wants to use tools (function calling)
-                tool_calls = getattr(assistant_message, 'tool_calls', None)
+                # Check if Groq wants to use tools (function calling) - only if tools are allowed
+                tool_calls = getattr(assistant_message, 'tool_calls', None) if not force_no_tools else None
                 
                 if tool_calls:
                     # Groq called one or more tools
                     for tool_call in tool_calls:
                         tool_name = tool_call.function.name
                         tool_args = json.loads(tool_call.function.arguments) if isinstance(tool_call.function.arguments, str) else tool_call.function.arguments
+                        
+                        # Fix parameter types - Groq sometimes returns strings instead of expected types
+                        if tool_name == "get_all_invoices":
+                            if "limit" in tool_args:
+                                try:
+                                    tool_args["limit"] = int(tool_args["limit"])
+                                except (ValueError, TypeError):
+                                    tool_args["limit"] = 20  # Default value
+                        elif tool_name == "search_invoices":
+                            if "limit" in tool_args:
+                                try:
+                                    tool_args["limit"] = int(tool_args["limit"])
+                                except (ValueError, TypeError):
+                                    tool_args["limit"] = 10  # Default value
+                        elif tool_name == "get_invoice_by_id":
+                            if "invoice_id" in tool_args:
+                                try:
+                                    tool_args["invoice_id"] = int(tool_args["invoice_id"])
+                                except (ValueError, TypeError):
+                                    logger.error(f"Invalid invoice_id: {tool_args['invoice_id']}")
+                                    continue
                         
                         logger.info(f"✅ Groq calling tool: {tool_name}({tool_args})")
                         
@@ -504,6 +591,15 @@ CÁCH SỬ DỤNG: Khi bạn cần lấy dữ liệu, hãy nói rõ:
         Dùng khi chỉ cần trả lời chung chung
         """
         try:
+            # Check if Groq client is available
+            if not self.client:
+                return {
+                    "message": "⚠️ Groq AI chưa được cấu hình. Vui lòng thêm GROQ_API_KEY vào file .env",
+                    "type": "error",
+                    "method": "mock",
+                    "error": "GROQ_API_KEY not configured",
+                    "timestamp": datetime.now().isoformat()
+                }
             if user_id not in self.conversation_history:
                 self.conversation_history[user_id] = []
             

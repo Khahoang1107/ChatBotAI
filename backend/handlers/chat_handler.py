@@ -678,27 +678,12 @@ Bạn muốn upload ảnh bây giờ không?''',
                 
                 # Format response
                 extracted = mock_result.get('extracted_data', {})
+                invoice_info = self._format_invoice_info(extracted)
+                
                 response_text = f"""📋 **Kết quả OCR từ file: {filename}**
 
 🧾 **Thông tin hóa đơn:**
-• Số hóa đơn: {extracted.get('invoice_number', 'N/A')}
-• Ngày: {extracted.get('date', 'N/A')}
-• Tổng tiền: {extracted.get('total_amount', 'N/A')}
-• Thuế VAT: {extracted.get('tax_amount', 'N/A')}
-• Nhà cung cấp: {extracted.get('supplier_name', 'N/A')}"""
-
-                if extracted.get('supplier_tax_code'):
-                    response_text += f"\n• MST nhà cung cấp: {extracted.get('supplier_tax_code')}"
-                    
-                if extracted.get('buyer_name'):
-                    response_text += f"\n• Khách hàng: {extracted.get('buyer_name')}"
-                
-                if extracted.get('items'):
-                    response_text += f"\n\n📦 **Chi tiết sản phẩm:**"
-                    for i, item in enumerate(extracted.get('items', [])[:3], 1):
-                        response_text += f"\n{i}. {item.get('name', 'N/A')} - {item.get('qty', 0)} x {item.get('price', 'N/A')}"
-
-                response_text += f"""
+{invoice_info}
 
 📊 **Độ chính xác:** {extracted.get('confidence', 0)*100:.1f}%
 💾 **Đã lưu vào hệ thống thành công!**"""
@@ -953,18 +938,18 @@ Bạn muốn phân tích file nào?''',
             }
             icon = type_icons.get(invoice_type, '📄')
             
+            # Tạo thông tin hóa đơn với tất cả trường không rỗng
+            invoice_info = self._format_invoice_info(extracted)
+            
             notification_text = f"""✅ **Xử lý ảnh hoàn tất!**
 
 {icon} **File:** {filename}
 🕒 **Thời gian:** {datetime.now().strftime('%H:%M:%S')}
 
-📋 **Kết quả OCR:**
-• Mã hóa đơn: {extracted.get('invoice_code', 'N/A')}
-• Khách hàng: {extracted.get('buyer_name', 'N/A')} 
-• Tổng tiền: {extracted.get('total_amount', 'N/A')}
-• Loại: {invoice_type.title()}
+� **Thông tin hóa đơn:**
+{invoice_info}
 
-📊 **Độ chính xác:** {ocr_result.get('confidence_score', 0)*100:.1f}%
+📊 **Độ tin cậy:** {ocr_result.get('confidence_score', 0)*100:.1f}%
 💾 **Đã lưu vào hệ thống với ID: {ocr_result.get('database_id', 'N/A')}**
 
 🎉 **Bạn có thể xem chi tiết hoặc tiếp tục upload ảnh khác!**"""
@@ -1465,3 +1450,74 @@ Bạn muốn thử upload hóa đơn để training không?''',
             return f"{dates[0]} to {dates[-1]}"
         
         return "Unknown range"
+    
+    def _format_invoice_info(self, extracted: Dict) -> str:
+        """Format all non-empty invoice fields for display"""
+        # Define field mappings with Vietnamese labels
+        field_mappings = {
+            'invoice_code': 'Mã',
+            'buyer_name': 'Khách hàng',
+            'seller_name': 'Người bán',
+            'total_amount': 'Tổng tiền',
+            'date': 'Ngày',
+            'invoice_time': 'Thời gian',
+            'due_date': 'Hạn thanh toán',
+            'transaction_id': 'Mã giao dịch',
+            'payment_method': 'Phương thức thanh toán',
+            'payment_account': 'Tài khoản thanh toán',
+            'buyer_tax_id': 'MST khách hàng',
+            'seller_tax_id': 'MST người bán',
+            'buyer_address': 'Địa chỉ khách hàng',
+            'seller_address': 'Địa chỉ người bán',
+            'tax_code': 'Mã số thuế',
+            'subtotal': 'Tiền hàng',
+            'tax_amount': 'Tiền thuế',
+            'tax_percentage': 'Tỷ lệ thuế',
+            'currency': 'Tiền tệ',
+            'invoice_type': 'Loại hóa đơn'
+        }
+        
+        # Build formatted info string
+        info_lines = []
+        
+        for field_key, display_name in field_mappings.items():
+            value = extracted.get(field_key)
+            
+            # Skip empty values (None, empty string, 'Unknown', 'N/A', '0 VND', etc.)
+            if not value or str(value).strip() in ['', 'Unknown', 'N/A', '0 VND', 'INV-UNKNOWN']:
+                continue
+            
+            # Special handling for invoice_type
+            if field_key == 'invoice_type':
+                type_mapping = {
+                    'electricity': 'Hóa đơn tiền điện',
+                    'water': 'Hóa đơn tiền nước',
+                    'service': 'Hóa đơn dịch vụ',
+                    'momo_payment': 'Thanh toán MoMo',
+                    'general': 'Hóa đơn chung'
+                }
+                display_value = type_mapping.get(value, str(value).title())
+            else:
+                display_value = str(value).strip()
+            
+            info_lines.append(f"• {display_name}: {display_value}")
+        
+        # Handle items if present
+        items = extracted.get('items', [])
+        if items and isinstance(items, list) and len(items) > 0:
+            info_lines.append("")
+            info_lines.append("📦 **Chi tiết sản phẩm:**")
+            for i, item in enumerate(items[:3], 1):  # Show max 3 items
+                description = item.get('description', 'N/A')
+                amount = item.get('amount', 0)
+                quantity = item.get('quantity', 1)
+                info_lines.append(f"   {i}. {description} - {quantity} x {amount:,} VND")
+            
+            if len(items) > 3:
+                info_lines.append(f"   ... và {len(items) - 3} mục khác")
+        
+        # Join all lines
+        if info_lines:
+            return "\n".join(info_lines)
+        else:
+            return "• Không có thông tin chi tiết"

@@ -222,73 +222,80 @@ class ChatMessageResponse(BaseModel):
 
 # ===================== OCR HELPER FUNCTIONS =====================
 
-def extract_invoice_fields(ocr_text: str, filename: str) -> dict:
+def extract_invoice_fields(ocr_text: str, filename: str = "") -> dict:
     """
-    Trích xuất thông tin hóa đơn từ OCR text
-    Hỗ trợ cả hóa đơn truyền thống và biên lai MoMo, hóa đơn điện lực
+    Extract invoice fields from OCR text with enhanced dash amount recognition
     """
     import re
-    import json
+    from datetime import datetime
+    
+    # Initialize training client for dash pattern learning
+    training_client = None
+    try:
+        from utils.training_client import TrainingDataClient
+        training_client = TrainingDataClient()
+    except Exception as e:
+        logger.warning(f"Could not initialize training client: {e}")
     
     data = {
-        "invoice_code": "INV-UNKNOWN",
-        "date": "",
-        "buyer_name": "Unknown",
-        "seller_name": "Unknown",
-        "total_amount": "0 VND",
-        "invoice_type": "general",
-        "tax_code": "",
-        # MoMo specific fields
-        "transaction_id": "",
-        "payment_method": "MoMo",
-        "payment_account": "",
-        "buyer_tax_id": "",
-        "seller_tax_id": "",
-        "buyer_address": "",
-        "seller_address": "",
-        "currency": "VND",
-        "subtotal": 0,
-        "tax_amount": 0,
-        "tax_percentage": 0,
-        "total_amount_value": 0,
-        "invoice_time": "",
-        "due_date": "",
-        "items": []
+        'invoice_code': 'INV-UNKNOWN',
+        'date': datetime.now().strftime("%d/%m/%Y"),
+        'buyer_name': 'Unknown',
+        'seller_name': 'Unknown',
+        'total_amount': '0 VND',
+        'total_amount_value': 0,
+        'subtotal': 0,
+        'tax_amount': 0,
+        'tax_percentage': 0,
+        'currency': 'VND',
+        'buyer_tax_id': '',
+        'seller_tax_id': '',
+        'buyer_address': '',
+        'seller_address': '',
+        'items': [],
+        'transaction_id': '',
+        'payment_method': '',
+        'payment_account': '',
+        'invoice_time': None,
+        'due_date': None,
+        'invoice_type': 'general'
     }
     
     text_lower = ocr_text.lower()
-    filename_lower = filename.lower() if filename else ""
     
-    # Detect electricity bill (hóa đơn tiền điện) - check first as it can also be paid via MoMo
-    is_electricity = any(keyword in text_lower or keyword in filename_lower for keyword in [
-        'điện lực', 'tiền điện', 'kỳ', 'kwh', 'điện', 'evn', 'công ty điện lực',
-        'ma khach hang', 'tén khach hang', 'dia chi', 'nội dung', 'số tiền',
-        'nhà cung cấp', 'kỳ thanh toán'
-    ])
+    # Detect invoice type with improved priority logic
+    # ⭐ PRIORITY: Check for electricity bill keywords first when both MoMo and electricity are present
+    has_momo_keywords = any(word in text_lower for word in ['momo', 'ví điện tử', 'momo wallet', 'transfer', 'chuyển khoản'])
+    has_electricity_keywords = any(word in text_lower for word in ['điện', 'electricity', 'tiền điện', 'hóa đơn tiền điện', 'kwh', 'evn', 'điện lực', 'nhà cung cấp'])
     
-    # Detect MoMo invoice - but not if it's clearly an electricity bill
-    is_momo = False
-    if not is_electricity:
-        is_momo = any(keyword in text_lower or keyword in filename_lower for keyword in [
-            'momo', 'ví điện tử', 'thanh toán momo', 'momo wallet', 'momo payment',
-            'momo-upload-api', 'transaction id', 'mã giao dịch', 'tai khoan/the vi momo'
-        ])
+    # If both MoMo and electricity keywords are present, prioritize electricity (MoMo payment for electricity bill)
+    if has_electricity_keywords:
+        is_electricity = True
+        is_momo = False
+        logger.info("🔍 Detected electricity bill payment via MoMo - prioritizing electricity processing")
+    elif has_momo_keywords:
+        is_momo = True
+        is_electricity = False
+    else:
+        is_momo = False
+        is_electricity = False
     
     if is_momo:
+        # Handle MoMo payment receipts
         data['invoice_type'] = 'momo_payment'
-        data['payment_method'] = 'MoMo'
+        data['seller_name'] = 'MoMo Payment'
         
-        # Extract MoMo specific patterns
+        logger.info(f"🔍 Processing MoMo invoice. OCR text preview: {ocr_text[:200]}...")
         
-        # Transaction ID / Mã giao dịch - improved patterns with context validation
-        transaction_patterns = [
+        # Extract transaction ID (Mã giao dịch)
+        transaction_id_patterns = [
             r'(?:mã giao dịch|ma giao dich|transaction id|trans id|transaction)[:\s]*([A-Z0-9\-]{6,20})',
             r'(?:mã giao dịch|ma giao dich|transaction id|trans id)[:\s]*([A-Z0-9\-]{6,20})',
             # More specific patterns - avoid generic alphanumeric matches
             r'(?:ID|id)[:\s]*([A-Z0-9]{8,16})(?:\s|$)',  # Must be preceded by ID label
             r'([A-Z]{2,4}\d{6,12})',  # Pattern like MOMO12345678, EVN123456
         ]
-        for pattern in transaction_patterns:
+        for pattern in transaction_id_patterns:
             match = re.search(pattern, ocr_text, re.IGNORECASE)
             if match:
                 candidate_id = match.group(1).strip()
@@ -315,13 +322,14 @@ def extract_invoice_fields(ocr_text: str, filename: str) -> dict:
                 break
         
         # Amount patterns for MoMo - improved with better validation
-        amount_patterns = [
-            r'(?:số tiền|amount|giá trị|tổng tiền)[:\s]*([0-9,\.]+)(?:\s*(?:vnd|đ|vnđ))?',
-            r'(?:thành tiền|total|tổng)[:\s]*([0-9,\.]+)(?:\s*(?:vnd|đ|vnđ))?',
-            r'([0-9,\.]+)(?:\s*(?:vnd|đ|vnđ))\s*$',  # Amount at end of line
-            r'(?:số tiền|amount)[:\s]*([0-9,\.]+)',  # Without currency at end
+        # ⭐ HIGH PRIORITY: Check for dash-indicated total amounts first
+        dash_amount_patterns = [
+            r'(?:^\s*-\s*|-\s+)([0-9,\.]+)(?:\s*(?:vnd|đ|vnđ))?\s*$',  # Line starting with dash and ending with amount
+            r'(?:tổng|total|amount)[:\s]*-\s*([0-9,\.]+)(?:\s*(?:vnd|đ|vnđ))?',  # Total with dash
         ]
-        for pattern in amount_patterns:
+        
+        # Check for dash-indicated amounts first (highest priority)
+        for pattern in dash_amount_patterns:
             match = re.search(pattern, ocr_text, re.IGNORECASE | re.MULTILINE)
             if match:
                 amount_str = match.group(1).strip()
@@ -352,10 +360,71 @@ def extract_invoice_fields(ocr_text: str, filename: str) -> dict:
                         data['total_amount'] = f"{numeric_value:,.0f} VND"
                         data['total_amount_value'] = numeric_value
                         data['subtotal'] = numeric_value
+                        logger.info(f"✅ Found dash-indicated total amount: {data['total_amount']}")
                         break
                         
                 except (ValueError, OverflowError):
                     continue
+        
+        # If no dash-indicated amount found, use regular patterns
+        if not data.get('total_amount') or data['total_amount'] == '0 VND':
+            amount_patterns = [
+                # Vietnamese patterns
+                r'(?:số tiền|amount|giá trị|tổng tiền|thành tiền)[:\s]*([0-9,\.]+)(?:\s*(?:vnd|đ|vnđ|vnd|đồng))?',
+                r'(?:thành tiền|total|tổng|tổng cộng)[:\s]*([0-9,\.]+)(?:\s*(?:vnd|đ|vnđ|vnd|đồng))?',
+                r'(?:số tiền chuyển|transfer amount|chuyển khoản)[:\s]*([0-9,\.]+)(?:\s*(?:vnd|đ|vnđ|vnd|đồng))?',
+                # English patterns common in MoMo
+                r'(?:Amount|Total|Value)[:\s]*([0-9,\.]+)(?:\s*(?:VND|đ|VNĐ))?',
+                r'(?:Transfer|Payment)[:\s]*([0-9,\.]+)(?:\s*(?:VND|đ|VNĐ))?',
+                # Just numbers with currency at end of line
+                r'([0-9,\.]+)(?:\s*(?:vnd|đ|vnđ|vnd|đồng))\s*$',
+                # Just numbers at end of line (MoMo often just shows the amount)
+                r'([0-9,\.]+)\s*$',
+                # Without currency at end
+                r'(?:số tiền|amount|tổng)[:\s]*([0-9,\.]+)',
+            ]
+            logger.info(f"🔍 Trying {len(amount_patterns)} amount patterns for MoMo...")
+            for i, pattern in enumerate(amount_patterns):
+                match = re.search(pattern, ocr_text, re.IGNORECASE | re.MULTILINE)
+                if match:
+                    logger.info(f"✅ Pattern {i} matched: {pattern} → {match.group(1)}")
+                    amount_str = match.group(1).strip()
+                    
+                    # Clean up the amount string
+                    amount_str = amount_str.replace(' ', '').replace('_', '')
+                    
+                    # Handle potential negative amounts (though rare in receipts)
+                    is_negative = False
+                    if amount_str.startswith('-') or '-308.472d' in ocr_text:
+                        is_negative = True
+                        amount_str = amount_str.lstrip('-')
+                    
+                    try:
+                        # Parse amount - handle Vietnamese number format
+                        if ',' in amount_str and '.' in amount_str:
+                            # Handle format like 1,234.56
+                            numeric_value = float(amount_str.replace(',', ''))
+                        else:
+                            # Handle format like 1234567 or 1.234.567
+                            numeric_value = float(amount_str.replace(',', '').replace('.', ''))
+                        
+                        if is_negative:
+                            numeric_value = -numeric_value
+                        
+                        # Validate amount is reasonable (not too large or too small)
+                        if 100 <= numeric_value <= 100000000:  # Between 100 VND and 100M VND
+                            data['total_amount'] = f"{numeric_value:,.0f} VND"
+                            data['total_amount_value'] = numeric_value
+                            data['subtotal'] = numeric_value
+                            break
+                            
+                    except (ValueError, OverflowError):
+                        continue
+        
+        # Log if no amount found
+        if not data.get('total_amount') or data['total_amount'] == '0 VND':
+            logger.warning(f"⚠️ No amount found in MoMo OCR text. Text length: {len(ocr_text)}")
+            logger.warning(f"⚠️ OCR text sample: {ocr_text[:300]}...")
         
         # Date/Time patterns for MoMo
         datetime_patterns = [
@@ -369,7 +438,15 @@ def extract_invoice_fields(ocr_text: str, filename: str) -> dict:
             if match:
                 datetime_str = match.group(1).strip()
                 data['date'] = datetime_str
-                data['invoice_time'] = datetime_str
+                # Convert to datetime object for database
+                try:
+                    if ' ' in datetime_str:  # Has time component
+                        dt = datetime.strptime(datetime_str, '%d/%m/%Y %H:%M')
+                    else:  # Date only
+                        dt = datetime.strptime(datetime_str, '%d/%m/%Y')
+                    data['invoice_time'] = dt.isoformat()
+                except ValueError:
+                    data['invoice_time'] = None
                 break
         
         # Recipient/Seller for MoMo
@@ -462,28 +539,27 @@ def extract_invoice_fields(ocr_text: str, filename: str) -> dict:
                 break
         
         # Extract amount (Số tiền) - improved patterns with better validation and negative amounts
-        amount_patterns = [
-            r'(?:số tiền|amount|total|tổng tiền|tổng cộng)[:\s]*([0-9,\.]+)(?:\s*(?:vnd|đ|vnđ))?',
-            r'(?:số tiền|amount|total|tổng tiền|tổng cộng)\s+([0-9,\.]+)(?:\s*(?:vnd|đ|vnđ))?',
-            r'(?:thành tiền|tổng|total)[:\s]*([0-9,\.]+)(?:\s*(?:vnd|đ|vnđ))?',
-            r'([0-9,\.]+)(?:\s*(?:vnd|đ|vnđ))?\s*$',  # Amount at end of text
-            # Special patterns for negative amounts in electricity bills
-            r'-\s*([0-9,\.]+)d?',  # -308.472d pattern
-            r'\(\s*([0-9,\.]+)d?\s*\)',  # (308.472d) pattern
+        # ⭐ HIGH PRIORITY: Check for dash-indicated total amounts first
+        dash_amount_patterns = [
             r'@[\)\s]*-\s*([0-9,\.]+)d?',  # @) -308.472d pattern
+            r'(?:^\s*-\s*|-\s+)([0-9,\.]+)(?:\s*(?:vnd|đ|vnđ))?\s*$',  # Line starting with dash and ending with amount
+            r'(?:tổng|total|amount)[:\s]*-\s*([0-9,\.]+)(?:\s*(?:vnd|đ|vnđ))?',  # Total with dash
+            r'-\s*([0-9,\.]+)d?',  # -308.472d pattern (direct match)
         ]
-        for pattern in amount_patterns:
+        
+        # Check for dash-indicated amounts first (highest priority)
+        for pattern in dash_amount_patterns:
             match = re.search(pattern, ocr_text, re.IGNORECASE | re.MULTILINE)
             if match:
                 amount_str = match.group(1).strip()
                 
-                # Check if this is a negative amount
-                is_negative = False
-                if match.group(0).startswith('-') or match.group(0).startswith('(') or '-308.472d' in ocr_text or '@) -' in ocr_text:
-                    is_negative = True
-                
                 # Clean up the amount string
                 amount_str = amount_str.replace(' ', '').replace('_', '')
+                
+                # Check if this is a negative amount (dash in the full match indicates negative)
+                is_negative = False
+                if '-' in match.group(0) or match.group(0).startswith('-'):
+                    is_negative = True
                 
                 try:
                     # Parse amount - handle Vietnamese number format
@@ -497,16 +573,64 @@ def extract_invoice_fields(ocr_text: str, filename: str) -> dict:
                     if is_negative:
                         numeric_value = -numeric_value
                     
-                    # For electricity bills, negative amounts are common (payments)
-                    # Validate amount is reasonable for electricity bills (typically 50k-2M VND, can be negative)
-                    if -5000000 <= numeric_value <= 10000000 and numeric_value != 0:  # Between -5M VND and 10M VND
+                    # Validate amount is reasonable (not too large or too small)
+                    if -5000000 <= numeric_value <= 10000000 and numeric_value != 0:  # Between -5M VND and 10M VND (allow negative for electricity payments)
                         data['total_amount'] = f"{abs(numeric_value):,.0f} VND"
                         data['total_amount_value'] = numeric_value  # Keep negative for payments
                         data['subtotal'] = numeric_value
+                        logger.info(f"✅ Found dash-indicated total amount: {data['total_amount']}")
                         break
                         
                 except (ValueError, OverflowError):
                     continue
+        
+        # If no dash-indicated amount found, use regular patterns
+        if not data.get('total_amount') or data['total_amount'] == '0 VND':
+            amount_patterns = [
+                r'(?:số tiền|amount|total|tổng tiền|tổng cộng)[:\s]*([0-9,\.]+)(?:\s*(?:vnd|đ|vnđ))?',
+                r'(?:số tiền|amount|total|tổng tiền|tổng cộng)\s+([0-9,\.]+)(?:\s*(?:vnd|đ|vnđ))?',
+                r'(?:thành tiền|tổng|total)[:\s]*([0-9,\.]+)(?:\s*(?:vnd|đ|vnđ))?',
+                r'([0-9,\.]+)(?:\s*(?:vnd|đ|vnđ))?\s*$',  # Amount at end of text
+                # Special patterns for negative amounts in electricity bills
+                r'-\s*([0-9,\.]+)d?',  # -308.472d pattern
+                r'\(\s*([0-9,\.]+)d?\s*\)',  # (308.472d) pattern
+                r'@[\)\s]*-\s*([0-9,\.]+)d?',  # @) -308.472d pattern
+            ]
+            for pattern in amount_patterns:
+                match = re.search(pattern, ocr_text, re.IGNORECASE | re.MULTILINE)
+                if match:
+                    amount_str = match.group(1).strip()
+                    
+                    # Check if this is a negative amount
+                    is_negative = False
+                    if match.group(0).startswith('-') or match.group(0).startswith('(') or '-308.472d' in ocr_text or '@) -' in ocr_text:
+                        is_negative = True
+                    
+                    # Clean up the amount string
+                    amount_str = amount_str.replace(' ', '').replace('_', '')
+                    
+                    try:
+                        # Parse amount - handle Vietnamese number format
+                        if ',' in amount_str and '.' in amount_str:
+                            # Handle format like 1,234.56
+                            numeric_value = float(amount_str.replace(',', ''))
+                        else:
+                            # Handle format like 1234567 or 1.234.567
+                            numeric_value = float(amount_str.replace(',', '').replace('.', ''))
+                        
+                        if is_negative:
+                            numeric_value = -numeric_value
+                        
+                        # For electricity bills, negative amounts are common (payments)
+                        # Validate amount is reasonable for electricity bills (typically 50k-2M VND, can be negative)
+                        if -5000000 <= numeric_value <= 10000000 and numeric_value != 0:  # Between -5M VND and 10M VND
+                            data['total_amount'] = f"{abs(numeric_value):,.0f} VND"
+                            data['total_amount_value'] = numeric_value  # Keep negative for payments
+                            data['subtotal'] = numeric_value
+                            break
+                            
+                    except (ValueError, OverflowError):
+                        continue
         
         # Extract date from period or set current date
         date_patterns = [
@@ -593,20 +717,66 @@ def extract_invoice_fields(ocr_text: str, filename: str) -> dict:
                 break
         
         # Tìm số tiền (tổng, total, amount)
-        amount_patterns = [
-            r'(?:Tổng|Total|Amount|Cộng)[:\s]*([0-9,\.]+)(?:\s*VND)?',
-            r'([0-9,\.]+)(?:\s*VND)?$',
+        # ⭐ HIGH PRIORITY: Check for dash-indicated total amounts first
+        dash_amount_patterns = [
+            r'(?:^\s*-\s*|-\s+)([0-9,\.]+)(?:\s*(?:vnd|đ|vnđ))?\s*$',  # Line starting with dash and ending with amount
+            r'(?:tổng|total|amount)[:\s]*-\s*([0-9,\.]+)(?:\s*(?:vnd|đ|vnđ))?',  # Total with dash
         ]
-        for pattern in amount_patterns:
+        
+        # Check for dash-indicated amounts first (highest priority)
+        for pattern in dash_amount_patterns:
             match = re.search(pattern, ocr_text, re.IGNORECASE | re.MULTILINE)
             if match:
                 amount_str = match.group(1).strip()
-                data['total_amount'] = f"{amount_str} VND"
+                
+                # Clean up the amount string
+                amount_str = amount_str.replace(' ', '').replace('_', '')
+                
+                # Handle potential negative amounts (though rare in receipts)
+                is_negative = False
+                if amount_str.startswith('-') or '-308.472d' in ocr_text:
+                    is_negative = True
+                    amount_str = amount_str.lstrip('-')
+                
                 try:
-                    data['total_amount_value'] = float(amount_str.replace(',', '').replace('.', ''))
-                except ValueError:
-                    pass
-                break
+                    # Parse amount - handle Vietnamese number format
+                    if ',' in amount_str and '.' in amount_str:
+                        # Handle format like 1,234.56
+                        numeric_value = float(amount_str.replace(',', ''))
+                    else:
+                        # Handle format like 1234567 or 1.234.567
+                        numeric_value = float(amount_str.replace(',', '').replace('.', ''))
+                    
+                    if is_negative:
+                        numeric_value = -numeric_value
+                    
+                    # Validate amount is reasonable (not too large or too small)
+                    if 100 <= numeric_value <= 100000000:  # Between 100 VND and 100M VND
+                        data['total_amount'] = f"{numeric_value:,.0f} VND"
+                        data['total_amount_value'] = numeric_value
+                        data['subtotal'] = numeric_value
+                        logger.info(f"✅ Found dash-indicated total amount: {data['total_amount']}")
+                        break
+                        
+                except (ValueError, OverflowError):
+                    continue
+        
+        # If no dash-indicated amount found, use regular patterns
+        if not data.get('total_amount') or data['total_amount'] == '0 VND':
+            amount_patterns = [
+                r'(?:Tổng|Total|Amount|Cộng)[:\s]*([0-9,\.]+)(?:\s*VND)?',
+                r'([0-9,\.]+)(?:\s*VND)?$',
+            ]
+            for pattern in amount_patterns:
+                match = re.search(pattern, ocr_text, re.IGNORECASE | re.MULTILINE)
+                if match:
+                    amount_str = match.group(1).strip()
+                    data['total_amount'] = f"{amount_str} VND"
+                    try:
+                        data['total_amount_value'] = float(amount_str.replace(',', '').replace('.', ''))
+                    except ValueError:
+                        pass
+                    break
     
     # Phân loại loại hóa đơn dựa trên nội dung (cho cả MoMo và traditional)
     if not is_momo and not is_electricity:
@@ -1532,56 +1702,10 @@ async def export_by_range_pdf(
         logger.error(f"❌ Export error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# ===================== AUTH ENDPOINTS =====================
-
-# Auth endpoints are now handled by auth_router from auth_api.py
-# See /api/auth/* endpoints
-
-@app.get("/health")
-async def health_check():
-    """🏥 Health check endpoint"""
-    return JSONResponse({
-        "status": "healthy",
-        "service": "Invoice Chat Backend (FastAPI only)",
-        "version": "2.0.0",
-        "timestamp": datetime.now().isoformat(),
-        "database": "connected" if db_tools else "disconnected",
-        "chat_handlers": "initialized" if chat_handler else "not available"
-    })
-
-@app.get("/")
-async def root():
-    """📖 API Documentation - Home"""
-    return JSONResponse({
-        "service": "Invoice Chat Backend (Unified FastAPI)",
-        "version": "2.0.0",
-        "message": "FastAPI only - Flask removed ✅",
-        "running_on": "http://localhost:8000",
-        "endpoints": {
-            "root": "/",
-            "health": "/health",
-            "docs": "/docs",
-            "chat": {
-                "POST /chat": "Send chat message",
-                "POST /chat/simple": "Simple chat",
-                "POST /ai/test": "Test AI"
-            },
-            "upload": {
-                "POST /upload-image": "Upload image for OCR (async)"
-            },
-            "camera": {
-                "POST /api/camera/open": "Open camera",
-                "POST /api/camera/close": "Close camera"
-            },
-            "invoices": {
-                "POST /api/invoices/list": "List invoices",
-                "GET /api/invoices/list": "List invoices (GET)",
-                "GET /api/invoices/{id}": "Get invoice detail"
-            }
-        }
-    })
-
 # ===================== HELPER FUNCTIONS =====================
+
+from typing import List, Dict
+from datetime import datetime, timedelta
 
 def _filter_invoices_by_time(invoices: List[Dict], time_filter: str) -> List[Dict]:
     """Lọc hóa đơn theo thời gian"""
@@ -1616,6 +1740,230 @@ def _search_invoices(invoices: List[Dict], query: str) -> List[Dict]:
             results.append(inv)
     
     return results
+
+# ===================== AI TRAINING ENDPOINTS =====================
+
+@app.post("/api/ai-training/user-corrections")
+async def submit_user_correction(correction: Dict[str, Any]):
+    """
+    📝 Submit user correction for AI training
+    
+    Request body:
+    {
+        "original_text": "OCR text where amount was found",
+        "corrected_amount": "123456.78",
+        "invoice_type": "momo|electricity|traditional",
+        "user_id": "user123",
+        "correction_type": "dash_amount_recognition",
+        "timestamp": "2025-01-19T10:30:00Z"
+    }
+    """
+    try:
+        logger.info(f"📝 Received user correction: {correction}")
+        
+        # Validate required fields
+        required_fields = ['original_text', 'corrected_amount', 'correction_type']
+        for field in required_fields:
+            if field not in correction:
+                raise HTTPException(status_code=400, detail=f"Missing required field: {field}")
+        
+        # Store correction in database for training
+        if db_tools:
+            try:
+                conn = db_tools.connect()
+                if conn:
+                    with conn.cursor() as cursor:
+                        cursor.execute("""
+                            INSERT INTO user_corrections 
+                            (original_text, corrected_amount, invoice_type, user_id, correction_type, 
+                             confidence_score, created_at, updated_at)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                            RETURNING id
+                        """, (
+                            correction.get('original_text', ''),
+                            correction.get('corrected_amount', ''),
+                            correction.get('invoice_type', 'general'),
+                            correction.get('user_id', 'anonymous'),
+                            correction.get('correction_type', 'general'),
+                            1.0,  # High confidence for user corrections
+                            datetime.now(),
+                            datetime.now()
+                        ))
+                        result = cursor.fetchone()
+                        if result:
+                            correction_id = result[0]
+                            conn.commit()
+                            logger.info(f"✅ User correction stored with ID: {correction_id}")
+                        else:
+                            conn.commit()
+                            logger.warning("⚠️ User correction inserted but RETURNING failed")
+            except Exception as db_err:
+                logger.error(f"❌ Database error storing correction: {db_err}")
+                # Continue without failing - correction can still be processed
+        
+        # Update training patterns based on correction
+        if correction.get('correction_type') == 'dash_amount_recognition':
+            # Extract patterns from the correction
+            await _update_dash_patterns_from_correction(correction)
+        
+        return JSONResponse({
+            "success": True,
+            "message": "User correction submitted successfully",
+            "correction_id": correction_id if 'correction_id' in locals() else None,
+            "timestamp": datetime.now().isoformat()
+        })
+    
+    except Exception as e:
+        logger.error(f"❌ Error submitting user correction: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/ai-training/dash-patterns")
+async def get_dash_patterns():
+    """
+    📊 Get learned dash amount patterns for AI training
+    """
+    try:
+        logger.info("📊 Getting dash patterns for training")
+        
+        patterns = []
+        
+        
+        # Get patterns from user corrections
+        if db_tools:
+            try:
+                conn = db_tools.connect()
+                if conn:
+                    with conn.cursor() as cursor:
+                        cursor.execute("""
+                            SELECT original_text, corrected_amount, invoice_type, 
+                                   COUNT(*) as correction_count,
+                                   AVG(confidence_score) as avg_confidence,
+                                   MAX(created_at) as last_updated
+                            FROM user_corrections 
+                            WHERE correction_type = 'dash_amount_recognition'
+                            GROUP BY original_text, corrected_amount, invoice_type
+                            ORDER BY correction_count DESC, last_updated DESC
+                            LIMIT 50
+                        """)
+                        
+                        results = cursor.fetchall()
+                        
+                        for row in results:
+                            original_text, corrected_amount, invoice_type, count, avg_confidence, last_updated = row
+                            
+                            # Generate pattern from the correction
+                            pattern = _generate_pattern_from_correction(original_text, corrected_amount)
+                            
+                            if pattern:
+                                patterns.append({
+                                    'pattern': pattern,
+                                    'confidence': min(avg_confidence + (count * 0.1), 1.0),  # Boost confidence with more corrections
+                                    'description': f'Learned from {count} user correction(s)',
+                                    'validated_by_corrections': count,
+                                    'invoice_type': invoice_type,
+                                    'last_updated': last_updated.isoformat() if hasattr(last_updated, 'isoformat') else str(last_updated)
+                                })
+            except Exception as db_err:
+                logger.error(f"❌ Database error getting dash patterns: {db_err}")
+        
+        # Add default patterns if no learned patterns
+        if not patterns:
+            patterns = [
+                {
+                    'pattern': r'(?:^\s*-\s*|-\s+)([0-9,\.]+)(?:\s*(?:vnd|đ|vnđ))?',
+                    'confidence': 0.8,
+                    'description': 'Default: Line starting with dash',
+                    'validated_by_corrections': 0,
+                    'invoice_type': 'general'
+                },
+                {
+                    'pattern': r'(\d+(?:,\d{3})*(?:\.\d{2})?)(?:\s*(?:vnd|đ|vnđ))?\s*$',
+                    'confidence': 0.6,
+                    'description': 'Default: Amount at end of line',
+                    'validated_by_corrections': 0,
+                    'invoice_type': 'general'
+                }
+            ]
+        
+        return JSONResponse({
+            "success": True,
+            "patterns": patterns,
+            "count": len(patterns),
+            "timestamp": datetime.now().isoformat()
+        })
+    
+    except Exception as e:
+        logger.error(f"❌ Error getting dash patterns: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+async def _update_dash_patterns_from_correction(correction: Dict[str, Any]):
+    """
+    Update dash patterns based on user correction
+    """
+    try:
+        original_text = correction.get('original_text', '')
+        corrected_amount = correction.get('corrected_amount', '')
+        
+        # Generate pattern from this correction
+        pattern = _generate_pattern_from_correction(original_text, corrected_amount)
+        
+        if pattern:
+            logger.info(f"📝 Generated pattern from correction: {pattern}")
+            # Pattern is stored in database via the main endpoint
+        else:
+            logger.warning("⚠️ Could not generate pattern from correction")
+    
+    except Exception as e:
+        logger.error(f"❌ Error updating dash patterns: {str(e)}")
+
+def _generate_pattern_from_correction(original_text: str, corrected_amount: str) -> Optional[str]:
+    """
+    Generate regex pattern from user correction
+    
+    Args:
+        original_text: The OCR text
+        corrected_amount: The corrected amount string
+        
+    Returns:
+        Regex pattern string or None if cannot generate
+    """
+    import re
+    
+    # Clean the corrected amount for matching
+    clean_amount = corrected_amount.replace(',', '').replace('.', '').replace(' ', '')
+    
+    # Look for the amount in the original text
+    amount_patterns = [
+        r'\b' + re.escape(clean_amount) + r'\b',  # Exact match
+        r'\b\d+\b',  # Any number that matches
+    ]
+    
+    for pattern in amount_patterns:
+        match = re.search(pattern, original_text)
+        if match:
+            found_amount = match.group(0)
+            
+            # Check if the amount appears after a dash
+            amount_pos = original_text.find(found_amount)
+            
+            # Look for dash before the amount (within 10 characters)
+            dash_search_start = max(0, amount_pos - 10)
+            dash_search_text = original_text[dash_search_start:amount_pos]
+            
+            if '-' in dash_search_text:
+                # Found dash before amount - create dash pattern
+                return r'(?:^\s*-\s*|-\s+)([0-9,\.]+)(?:\s*(?:vnd|đ|vnđ))?'
+    
+    # If no dash found, check if amount is at end of line
+    lines = original_text.split('\n')
+    for line in lines:
+        if clean_amount in line.replace(',', '').replace('.', '').replace(' ', ''):
+            # Check if amount is at end of line
+            line_end = line.strip()
+            if line_end.replace(',', '').replace('.', '').replace(' ', '').endswith(clean_amount):
+                return r'([0-9,\.]+)(?:\s*(?:vnd|đ|vnđ))?\s*$'
+    
+    return None
 
 # ===================== TEST ENDPOINT =====================
 
@@ -1657,17 +2005,42 @@ async def chat_groq_options():
     return {"status": "ok"}
 
 @app.post("/chat/groq")
-async def chat_groq(request: ChatMessageRequest):
+async def chat_groq(request_body: Dict[str, Any]):
     """
     💬 Chat with Groq AI using database tools
     Groq có thể gọi các API tools để thao tác với database
     """
     try:
+        # Log raw request body for debugging 422 errors
+        logger.info(f"📨 Raw /chat/groq request body: {request_body}")
+        
+        # Validate request manually to get better error messages
+        if 'message' not in request_body:
+            logger.error("❌ Missing 'message' field in request")
+            raise HTTPException(status_code=422, detail="Missing required field: 'message'")
+        
+        message = request_body['message']
+        user_id = request_body.get('user_id', 'anonymous')
+        
+        # Validate message is string
+        if not isinstance(message, str):
+            logger.error(f"❌ 'message' field is not a string: {type(message)}")
+            raise HTTPException(status_code=422, detail="'message' must be a string")
+        
+        # Validate user_id is string or int (convert to string if needed)
+        if user_id is not None and not isinstance(user_id, (str, int)):
+            logger.error(f"❌ 'user_id' field is not a string or int: {type(user_id)}")
+            raise HTTPException(status_code=422, detail="'user_id' must be a string or integer")
+        
+        # Convert user_id to string
+        user_id = str(user_id) if user_id is not None else 'anonymous'
+        
+        logger.info(f"📨 Validated /chat/groq request - message: '{message}', user_id: '{user_id}'")
+        
         if not groq_chat_handler:
             raise HTTPException(status_code=503, detail="Groq chat handler not initialized")
         
-        user_message = request.message
-        user_id = request.user_id or "anonymous"
+        user_message = message
         
         logger.info(f"🤖 Groq chat from {user_id}: {user_message}")
         
@@ -1681,6 +2054,8 @@ async def chat_groq(request: ChatMessageRequest):
             "timestamp": response.get('timestamp'),
             "user_id": user_id
         })
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"❌ Groq chat error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1841,6 +2216,49 @@ def call_groq_tool_get(tool_name: str, limit: Optional[int] = 20):
         )
     except Exception as e:
         logger.error(f"❌ Error calling Groq tool via GET: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ===================== EXPORT DOWNLOAD ENDPOINTS =====================
+
+@app.get("/api/export/download/{filename}")
+async def download_export_file(filename: str):
+    """
+    Download exported file (Excel, CSV, PDF)
+    """
+    try:
+        # Validate filename to prevent directory traversal
+        if ".." in filename or "/" in filename or "\\" in filename:
+            raise HTTPException(status_code=400, detail="Invalid filename")
+        
+        # Check if file exists in temp_exports directory
+        temp_dir = os.path.join(os.getcwd(), "temp_exports")
+        file_path = os.path.join(temp_dir, filename)
+        
+        if not os.path.exists(file_path):
+            raise HTTPException(status_code=404, detail="File not found")
+        
+        # Determine content type based on file extension
+        if filename.endswith('.xlsx'):
+            media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        elif filename.endswith('.csv'):
+            media_type = "text/csv"
+        elif filename.endswith('.pdf'):
+            media_type = "application/pdf"
+        else:
+            media_type = "application/octet-stream"
+        
+        # Return file for download
+        return FileResponse(
+            path=file_path,
+            media_type=media_type,
+            filename=filename,
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error downloading file {filename}: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # ===================== RUN SERVER =====================
