@@ -91,17 +91,36 @@ except Exception as e:
     groq_chat_handler = None
     DecimalEncoder = None
 
-# Import auth and conversation services
+# Import auth utilities
 try:
-    from utils.auth_service import auth_service
-    from utils.sentiment_service import sentiment_service
-    from utils.conversation_service import conversation_service
-    logger.info("✅ Auth, sentiment, and conversation services initialized")
+    from utils.auth_utils import get_current_user, get_current_admin_user, get_current_user_or_admin
+    logger.info("✅ Auth utilities initialized")
+except Exception as e:
+    logger.warning(f"⚠️ Auth utilities not available: {e}")
+    get_current_user = None
+    get_current_admin_user = None
+    get_current_user_or_admin = None
+
+# Import services
+try:
+    from services.ocr_service import OCRService
+    from services.invoice_service import InvoiceService
+    from services.ai_training_service import AITrainingService
+    from services.ocr_job_service import OCRJobService
+
+    # Initialize services
+    ocr_service = OCRService(db_tools)
+    invoice_service = InvoiceService(db_tools)
+    ai_training_service = AITrainingService(db_tools)
+    ocr_job_service = OCRJobService(db_tools)
+
+    logger.info("✅ Services initialized")
 except Exception as e:
     logger.warning(f"⚠️ Services not available: {e}")
-    auth_service = None
-    sentiment_service = None
-    conversation_service = None
+    ocr_service = None
+    invoice_service = None
+    ai_training_service = None
+    ocr_job_service = None
 
 # Import export service
 try:
@@ -1009,7 +1028,7 @@ async def close_camera():
 async def get_invoice_list(request: InvoiceListRequest):
     """
     📋 Xem danh sách hóa đơn
-    
+
     Request:
     {
         "time_filter": "all",  # today, yesterday, week, month, all
@@ -1018,40 +1037,20 @@ async def get_invoice_list(request: InvoiceListRequest):
     }
     """
     try:
-        if not db_tools:
-            raise HTTPException(status_code=500, detail="Database not available")
-        
-        logger.info(f"📋 Getting invoices - filter: {request.time_filter}, limit: {request.limit}")
-        
-        # Get all invoices
-        invoices = db_tools.get_all_invoices(limit=request.limit)
-        
-        if not invoices:
-            return JSONResponse({
-                "success": True,
-                "message": "Không có hóa đơn nào",
-                "data": [],
-                "count": 0
-            })
-        
-        # Filter by time if needed
-        if request.time_filter != "all":
-            invoices = _filter_invoices_by_time(invoices, request.time_filter)
-        
-        # Search if query provided
-        if request.search_query:
-            invoices = _search_invoices(invoices, request.search_query)
-        
-        logger.info(f"✅ Returning {len(invoices)} invoices")
-        
+        if not invoice_service:
+            raise HTTPException(status_code=500, detail="Invoice service not available")
+
+        result = invoice_service.get_invoice_list(
+            time_filter=request.time_filter,
+            limit=request.limit,
+            search_query=request.search_query
+        )
+
         return JSONResponse({
-            "success": True,
-            "message": f"Tìm thấy {len(invoices)} hóa đơn",
-            "data": invoices,
-            "count": len(invoices),
+            **result,
             "timestamp": datetime.now().isoformat()
         })
-    
+
     except Exception as e:
         logger.error(f"❌ Invoice list error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1063,12 +1062,24 @@ async def get_invoice_list_get(
     search: Optional[str] = None
 ):
     """GET version of invoice list"""
-    request = InvoiceListRequest(
-        time_filter=time_filter,
-        limit=limit,
-        search_query=search
-    )
-    return await get_invoice_list(request)
+    try:
+        if not invoice_service:
+            raise HTTPException(status_code=500, detail="Invoice service not available")
+
+        result = invoice_service.get_invoice_list(
+            time_filter=time_filter,
+            limit=limit,
+            search_query=search
+        )
+
+        return JSONResponse({
+            **result,
+            "timestamp": datetime.now().isoformat()
+        })
+
+    except Exception as e:
+        logger.error(f"❌ Invoice list GET error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/invoices/{invoice_id}")
 async def get_invoice_detail(invoice_id: str):
@@ -1076,22 +1087,16 @@ async def get_invoice_detail(invoice_id: str):
     📄 Xem chi tiết một hóa đơn
     """
     try:
-        if not db_tools:
-            raise HTTPException(status_code=500, detail="Database not available")
-        
-        logger.info(f"📄 Getting invoice: {invoice_id}")
-        
-        invoice = db_tools.get_invoice_by_filename(invoice_id)
-        
-        if not invoice:
-            raise HTTPException(status_code=404, detail=f"Invoice not found: {invoice_id}")
-        
+        if not invoice_service:
+            raise HTTPException(status_code=500, detail="Invoice service not available")
+
+        result = invoice_service.get_invoice_detail(invoice_id)
+
         return JSONResponse({
-            "success": True,
-            "data": invoice,
+            **result,
             "timestamp": datetime.now().isoformat()
         })
-    
+
     except Exception as e:
         logger.error(f"❌ Get invoice detail error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1100,21 +1105,16 @@ async def get_invoice_detail(invoice_id: str):
 async def search_invoices(q: str = Query(..., min_length=1)):
     """🔍 Tìm kiếm hóa đơn"""
     try:
-        if not db_tools:
-            raise HTTPException(status_code=500, detail="Database not available")
-        
-        logger.info(f"🔍 Searching invoices: {q}")
-        
-        results = db_tools.search_invoices(q, limit=20)
-        
+        if not invoice_service:
+            raise HTTPException(status_code=500, detail="Invoice service not available")
+
+        result = invoice_service.search_invoices(q)
+
         return JSONResponse({
-            "success": True,
-            "query": q,
-            "data": results,
-            "count": len(results),
+            **result,
             "timestamp": datetime.now().isoformat()
         })
-    
+
     except Exception as e:
         logger.error(f"❌ Search error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1123,19 +1123,16 @@ async def search_invoices(q: str = Query(..., min_length=1)):
 async def get_invoice_statistics():
     """📊 Thống kê hóa đơn"""
     try:
-        if not db_tools:
-            raise HTTPException(status_code=500, detail="Database not available")
-        
-        logger.info("📊 Getting invoice statistics")
-        
-        stats = db_tools.get_statistics()
-        
+        if not invoice_service:
+            raise HTTPException(status_code=500, detail="Invoice service not available")
+
+        result = invoice_service.get_statistics()
+
         return JSONResponse({
-            "success": True,
-            "data": stats,
+            **result,
             "timestamp": datetime.now().isoformat()
         })
-    
+
     except Exception as e:
         logger.error(f"❌ Statistics error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1152,167 +1149,41 @@ async def process_camera_ocr(
 ):
     """
     📷 Process uploaded invoice image with OCR using Tesseract
-    
+
     Extract: invoice_code, date, amount, buyer, seller, tax_code
     Returns: Extracted data with confidence score
     """
     try:
         # Read file content
         content = await file.read()
-        
+
         if not content:
             raise HTTPException(status_code=400, detail="File is empty")
-        
-        logger.info(f"📷 Processing OCR for file: {file.filename} ({len(content)} bytes)")
-        
-    # Try to use Tesseract if available, fallback to PIL analysis
-        import re
-        import json
-        from PIL import Image
-        import tempfile
-        
-        ocr_text = ""
-        
-        # Save to temporary file and try OCR
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as tmp:
-            tmp.write(content)
-            tmp_path = tmp.name
-        
-        try:
-            image = Image.open(tmp_path)
 
-            # If caller explicitly requested mock, use fallback immediately
-            if use_mock:
-                logger.info(f"ℹ️ use_mock=True — generating fallback OCR for {file.filename}")
-                ocr_text = generate_ocr_fallback(file.filename, image)
-            else:
-                # Try Tesseract OCR if available. If it's not available or fails, return 503
-                try:
-                    import pytesseract
-                    from ocr_config import configure_tesseract
-                    if configure_tesseract():
-                        ocr_text = pytesseract.image_to_string(image, lang='vie+eng')
-                        logger.info(f"✅ Tesseract OCR extracted {len(ocr_text)} chars")
-                    else:
-                        raise Exception("Tesseract not configured properly")
-                except Exception as e:
-                    logger.error(f"❌ Tesseract OCR failed or is not installed: {e}")
-                    raise HTTPException(status_code=503, detail=(
-                        "Tesseract OCR engine not available or failed at runtime. "
-                        "Install Tesseract (https://github.com/tesseract-ocr/tesseract) and ensure it's on PATH, "
-                        "or call this endpoint with use_mock=true for demo fallback."
-                    ))
-            
-            # Extract structured data from OCR text
-            extracted_data = extract_invoice_fields(ocr_text, file.filename)
-            
-            # Store OCR result in groq chat handler for later use
-            if groq_chat_handler and user_id:
-                groq_chat_handler.store_ocr_result(user_id, extracted_data)
-                logger.info(f"📄 Stored OCR result for user {user_id}: {extracted_data.get('invoice_code', 'UNKNOWN')}")
-            
-            # Calculate confidence
-            text_confidence = min(len(ocr_text) / 500, 1.0)
-            pattern_confidence = calculate_pattern_confidence(extracted_data)
-            final_confidence = (text_confidence + pattern_confidence) / 2
-            
-            ocr_result = {
-                "status": "success",
-                "filename": file.filename,
-                "extracted_data": extracted_data,
-                "confidence_score": max(confidence_threshold, final_confidence),
-                "raw_text": ocr_text[:1000],
-                "message": f"✅ Xử lý OCR thành công cho {file.filename}"
-            }
-            
-        finally:
-            # Clean up temp file
-            os.remove(tmp_path)
-        
-        # Save to database only if persist is True
-        if persist and db_tools:
-            try:
-                invoice_data = ocr_result.get('extracted_data', {})
-                conn = db_tools.connect()
-                if conn:
-                    with conn.cursor() as cursor:
-                        # Convert date format from dd/mm/yyyy to yyyy-mm-dd for PostgreSQL
-                        invoice_date = invoice_data.get('date', datetime.now().strftime("%d/%m/%Y"))
-                        try:
-                            # Try to parse and convert date format
-                            if '/' in invoice_date:
-                                day, month, year = invoice_date.split('/')
-                                invoice_date = f"{year}-{month.zfill(2)}-{day.zfill(2)}"
-                            elif invoice_date == datetime.now().strftime("%d/%m/%Y"):
-                                # If it's today's date in dd/mm/yyyy format, convert to yyyy-mm-dd
-                                invoice_date = datetime.now().strftime("%Y-%m-%d")
-                        except:
-                            # If date parsing fails, use current date
-                            invoice_date = datetime.now().strftime("%Y-%m-%d")
-                        
-                        cursor.execute("""
-                            INSERT INTO invoices 
-                            (filename, invoice_code, invoice_type, buyer_name, seller_name,
-                             total_amount, confidence_score, raw_text, invoice_date,
-                             buyer_tax_id, seller_tax_id, buyer_address, seller_address,
-                             items, currency, subtotal, tax_amount, tax_percentage,
-                             total_amount_value, transaction_id, payment_method, 
-                             payment_account, invoice_time, due_date, created_at)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 
-                                   %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                            RETURNING id
-                        """, (
-                            file.filename,
-                            invoice_data.get('invoice_code', 'INV-UNKNOWN'),
-                            invoice_data.get('invoice_type', 'general'),
-                            invoice_data.get('buyer_name', 'N/A'),
-                            invoice_data.get('seller_name', 'N/A'),
-                            invoice_data.get('total_amount', 'N/A'),
-                            ocr_result['confidence_score'],
-                            ocr_result.get('raw_text', ''),
-                            invoice_date,  # Use converted date
-                            invoice_data.get('buyer_tax_id', ''),
-                            invoice_data.get('seller_tax_id', ''),
-                            invoice_data.get('buyer_address', ''),
-                            invoice_data.get('seller_address', ''),
-                            invoice_data.get('items', '[]'),
-                            invoice_data.get('currency', 'VND'),
-                            invoice_data.get('subtotal', 0),
-                            invoice_data.get('tax_amount', 0),
-                            invoice_data.get('tax_percentage', 0),
-                            invoice_data.get('total_amount_value', 0),
-                            invoice_data.get('transaction_id', ''),
-                            invoice_data.get('payment_method', ''),
-                            invoice_data.get('payment_account', ''),
-                            invoice_data.get('invoice_time', None),
-                            invoice_data.get('due_date', None),
-                            datetime.now()
-                        ))
-                        result = cursor.fetchone()
-                        if result:
-                            invoice_id = result[0]
-                            conn.commit()
-                            logger.info(f"✅ Invoice saved to DB with ID: {invoice_id}")
-                            ocr_result['database_id'] = invoice_id
-                        else:
-                            conn.commit()
-                            logger.warning(f"⚠️ Invoice inserted but RETURNING failed")
-            except Exception as db_err:
-                logger.error(f"❌ Database error: {db_err}")
-        else:
-            if not persist:
-                logger.info("ℹ️ persist=False — skipping DB save for OCR result")
-            elif not db_tools:
-                logger.warning("⚠️ Database tools not available — skipping DB save")
-        
-        logger.info(f"✅ OCR complete: {file.filename} → {extracted_data.get('invoice_code', 'UNKNOWN')}")
-        
+        if not ocr_service:
+            raise HTTPException(status_code=500, detail="OCR service not available")
+
+        # Process OCR using service
+        ocr_result = ocr_service.process_ocr_from_file(
+            file_content=content,
+            filename=file.filename,
+            confidence_threshold=confidence_threshold,
+            use_mock=use_mock or False,
+            persist=persist,
+            user_id=user_id
+        )
+
+        # Store OCR result in groq chat handler for later use
+        if groq_chat_handler and user_id:
+            groq_chat_handler.store_ocr_result(user_id, ocr_result.get('extracted_data', {}))
+            logger.info(f"📄 Stored OCR result for user {user_id}: {ocr_result.get('extracted_data', {}).get('invoice_code', 'UNKNOWN')}")
+
         return JSONResponse({
             "success": True,
             "data": ocr_result,
             "timestamp": datetime.now().isoformat()
         })
-    
+
     except Exception as e:
         logger.error(f"❌ OCR error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"OCR failed: {str(e)}")
@@ -1323,7 +1194,7 @@ async def process_camera_ocr(
 async def enqueue_ocr_job(request: OCREnqueueRequest):
     """
     ⏳ Enqueue an OCR job to be processed asynchronously
-    
+
     Request:
     {
         "filepath": "uploads/abc123.jpg",
@@ -1331,7 +1202,7 @@ async def enqueue_ocr_job(request: OCREnqueueRequest):
         "uploader": "chatbot",
         "user_id": "user123"
     }
-    
+
     Response:
     {
         "job_id": "uuid-...",
@@ -1340,44 +1211,18 @@ async def enqueue_ocr_job(request: OCREnqueueRequest):
     }
     """
     try:
-        if not db_tools:
-            raise HTTPException(status_code=500, detail="Database not available")
-        
-        import uuid
-        job_id = str(uuid.uuid4())
-        
-        # Insert job record into ocr_jobs table
-        conn = db_tools.connect()
-        if not conn:
-            raise HTTPException(status_code=500, detail="Cannot connect to database")
-        
-        with conn.cursor() as cursor:
-            cursor.execute("""
-                INSERT INTO ocr_jobs (id, filepath, filename, status, uploader, user_id, created_at, updated_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            """, (
-                job_id,
-                request.filepath,
-                request.filename,
-                'queued',
-                request.uploader,
-                request.user_id,
-                datetime.now(),
-                datetime.now()
-            ))
-            conn.commit()
-        
-        logger.info(f"📋 OCR job enqueued: {job_id} for file {request.filename}")
-        
-        return JSONResponse({
-            "success": True,
-            "job_id": job_id,
-            "status": "queued",
-            "message": f"OCR job {job_id} queued successfully",
-            "filename": request.filename,
-            "timestamp": datetime.now().isoformat()
-        })
-    
+        if not ocr_job_service:
+            raise HTTPException(status_code=500, detail="OCR job service not available")
+
+        result = ocr_job_service.enqueue_job(
+            filepath=request.filepath,
+            filename=request.filename,
+            uploader=request.uploader,
+            user_id=request.user_id
+        )
+
+        return JSONResponse(result)
+
     except Exception as e:
         logger.error(f"❌ Enqueue error: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to enqueue job: {str(e)}")
@@ -1386,7 +1231,7 @@ async def enqueue_ocr_job(request: OCREnqueueRequest):
 async def get_ocr_job_status(job_id: str):
     """
     📊 Get status of an OCR job
-    
+
     Response:
     {
         "job_id": "uuid-...",
@@ -1400,41 +1245,13 @@ async def get_ocr_job_status(job_id: str):
     }
     """
     try:
-        if not db_tools:
-            raise HTTPException(status_code=500, detail="Database not available")
-        
-        conn = db_tools.connect()
-        if not conn:
-            raise HTTPException(status_code=500, detail="Cannot connect to database")
-        
-        with conn.cursor() as cursor:
-            cursor.execute("""
-                SELECT id, filename, status, progress, invoice_id, error_message, created_at, updated_at
-                FROM ocr_jobs
-                WHERE id = %s
-            """, (job_id,))
-            result = cursor.fetchone()
-        
-        if not result:
-            raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
-        
-        job_id_db, filename, status, progress, invoice_id, error_msg, created_at, updated_at = result
-        
-        logger.info(f"📊 Job status retrieved: {job_id} → {status}")
-        
-        return JSONResponse({
-            "success": True,
-            "job_id": job_id_db,
-            "filename": filename,
-            "status": status,
-            "progress": progress or 0,
-            "invoice_id": invoice_id,
-            "error_message": error_msg,
-            "created_at": created_at.isoformat() if hasattr(created_at, 'isoformat') else str(created_at),
-            "updated_at": updated_at.isoformat() if hasattr(updated_at, 'isoformat') else str(updated_at),
-            "timestamp": datetime.now().isoformat()
-        })
-    
+        if not ocr_job_service:
+            raise HTTPException(status_code=500, detail="OCR job service not available")
+
+        result = ocr_job_service.get_job_status(job_id)
+
+        return JSONResponse(result)
+
     except Exception as e:
         logger.error(f"❌ Get job status error: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to get job status: {str(e)}")
@@ -1442,11 +1259,12 @@ async def get_ocr_job_status(job_id: str):
 # ===================== EXPORT ENDPOINTS =====================
 
 @app.post("/api/export/by-date/excel")
-async def export_by_date_excel(date: str = Query(..., pattern=r"^\d{4}-\d{2}-\d{2}$")):
+async def export_by_date_excel(date: str = Query(..., pattern=r"^\d{4}-\d{2}-\d{2}$"), current_user = Depends(get_current_user_or_admin)):
     """
     📊 Xuất hóa đơn theo ngày ra Excel
-    
+
     Query: ?date=2025-10-19
+    Requires authentication.
     """
     try:
         if not db_tools or not export_service:
@@ -1473,8 +1291,8 @@ async def export_by_date_excel(date: str = Query(..., pattern=r"^\d{4}-\d{2}-\d{
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/export/by-date/csv")
-async def export_by_date_csv(date: str = Query(..., pattern=r"^\d{4}-\d{2}-\d{2}$")):
-    """📊 Xuất hóa đơn theo ngày ra CSV"""
+async def export_by_date_csv(date: str = Query(..., pattern=r"^\d{4}-\d{2}-\d{2}$"), current_user = Depends(get_current_user_or_admin)):
+    """📊 Xuất hóa đơn theo ngày ra CSV - Requires authentication."""
     try:
         if not db_tools or not export_service:
             raise HTTPException(status_code=500, detail="Export service not available")
@@ -1498,8 +1316,8 @@ async def export_by_date_csv(date: str = Query(..., pattern=r"^\d{4}-\d{2}-\d{2}
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/export/by-date/pdf")
-async def export_by_date_pdf(date: str = Query(..., pattern=r"^\d{4}-\d{2}-\d{2}$")):
-    """📊 Xuất hóa đơn theo ngày ra PDF"""
+async def export_by_date_pdf(date: str = Query(..., pattern=r"^\d{4}-\d{2}-\d{2}$"), current_user = Depends(get_current_user_or_admin)):
+    """📊 Xuất hóa đơn theo ngày ra PDF - Requires authentication."""
     try:
         if not db_tools or not export_service:
             raise HTTPException(status_code=500, detail="Export service not available")
@@ -1523,11 +1341,12 @@ async def export_by_date_pdf(date: str = Query(..., pattern=r"^\d{4}-\d{2}-\d{2}
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/export/by-month/excel")
-async def export_by_month_excel(year: int = Query(...), month: int = Query(...)):
+async def export_by_month_excel(year: int = Query(...), month: int = Query(...), current_user = Depends(get_current_user_or_admin)):
     """
     📊 Xuất hóa đơn theo tháng ra Excel
     
     Query: ?year=2025&month=10
+    Requires authentication.
     """
     try:
         if not db_tools or not export_service:
@@ -1557,8 +1376,8 @@ async def export_by_month_excel(year: int = Query(...), month: int = Query(...))
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/export/by-month/csv")
-async def export_by_month_csv(year: int = Query(...), month: int = Query(...)):
-    """📊 Xuất hóa đơn theo tháng ra CSV"""
+async def export_by_month_csv(year: int = Query(...), month: int = Query(...), current_user = Depends(get_current_user_or_admin)):
+    """📊 Xuất hóa đơn theo tháng ra CSV - Requires authentication."""
     try:
         if not db_tools or not export_service:
             raise HTTPException(status_code=500, detail="Export service not available")
@@ -1585,8 +1404,8 @@ async def export_by_month_csv(year: int = Query(...), month: int = Query(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/export/by-month/pdf")
-async def export_by_month_pdf(year: int = Query(...), month: int = Query(...)):
-    """📊 Xuất hóa đơn theo tháng ra PDF"""
+async def export_by_month_pdf(year: int = Query(...), month: int = Query(...), current_user = Depends(get_current_user_or_admin)):
+    """📊 Xuất hóa đơn theo tháng ra PDF - Requires authentication."""
     try:
         if not db_tools or not export_service:
             raise HTTPException(status_code=500, detail="Export service not available")
@@ -1615,12 +1434,14 @@ async def export_by_month_pdf(year: int = Query(...), month: int = Query(...)):
 @app.post("/api/export/by-range/excel")
 async def export_by_range_excel(
     start_date: str = Query(..., pattern=r"^\d{4}-\d{2}-\d{2}$"),
-    end_date: str = Query(..., pattern=r"^\d{4}-\d{2}-\d{2}$")
+    end_date: str = Query(..., pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    current_user = Depends(get_current_user_or_admin)
 ):
     """
     📊 Xuất hóa đơn trong khoảng thời gian ra Excel
     
     Query: ?start_date=2025-10-01&end_date=2025-10-31
+    Requires authentication.
     """
     try:
         if not db_tools or not export_service:
@@ -1649,9 +1470,10 @@ async def export_by_range_excel(
 @app.post("/api/export/by-range/csv")
 async def export_by_range_csv(
     start_date: str = Query(..., pattern=r"^\d{4}-\d{2}-\d{2}$"),
-    end_date: str = Query(..., pattern=r"^\d{4}-\d{2}-\d{2}$")
+    end_date: str = Query(..., pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    current_user = Depends(get_current_user_or_admin)
 ):
-    """📊 Xuất hóa đơn trong khoảng thời gian ra CSV"""
+    """📊 Xuất hóa đơn trong khoảng thời gian ra CSV - Requires authentication."""
     try:
         if not db_tools or not export_service:
             raise HTTPException(status_code=500, detail="Export service not available")
@@ -1677,9 +1499,10 @@ async def export_by_range_csv(
 @app.post("/api/export/by-range/pdf")
 async def export_by_range_pdf(
     start_date: str = Query(..., pattern=r"^\d{4}-\d{2}-\d{2}$"),
-    end_date: str = Query(..., pattern=r"^\d{4}-\d{2}-\d{2}$")
+    end_date: str = Query(..., pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    current_user = Depends(get_current_user_or_admin)
 ):
-    """📊 Xuất hóa đơn trong khoảng thời gian ra PDF"""
+    """📊 Xuất hóa đơn trong khoảng thời gian ra PDF - Requires authentication."""
     try:
         if not db_tools or not export_service:
             raise HTTPException(status_code=500, detail="Export service not available")
@@ -1747,7 +1570,7 @@ def _search_invoices(invoices: List[Dict], query: str) -> List[Dict]:
 async def submit_user_correction(correction: Dict[str, Any]):
     """
     📝 Submit user correction for AI training
-    
+
     Request body:
     {
         "original_text": "OCR text where amount was found",
@@ -1759,60 +1582,16 @@ async def submit_user_correction(correction: Dict[str, Any]):
     }
     """
     try:
-        logger.info(f"📝 Received user correction: {correction}")
-        
-        # Validate required fields
-        required_fields = ['original_text', 'corrected_amount', 'correction_type']
-        for field in required_fields:
-            if field not in correction:
-                raise HTTPException(status_code=400, detail=f"Missing required field: {field}")
-        
-        # Store correction in database for training
-        if db_tools:
-            try:
-                conn = db_tools.connect()
-                if conn:
-                    with conn.cursor() as cursor:
-                        cursor.execute("""
-                            INSERT INTO user_corrections 
-                            (original_text, corrected_amount, invoice_type, user_id, correction_type, 
-                             confidence_score, created_at, updated_at)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                            RETURNING id
-                        """, (
-                            correction.get('original_text', ''),
-                            correction.get('corrected_amount', ''),
-                            correction.get('invoice_type', 'general'),
-                            correction.get('user_id', 'anonymous'),
-                            correction.get('correction_type', 'general'),
-                            1.0,  # High confidence for user corrections
-                            datetime.now(),
-                            datetime.now()
-                        ))
-                        result = cursor.fetchone()
-                        if result:
-                            correction_id = result[0]
-                            conn.commit()
-                            logger.info(f"✅ User correction stored with ID: {correction_id}")
-                        else:
-                            conn.commit()
-                            logger.warning("⚠️ User correction inserted but RETURNING failed")
-            except Exception as db_err:
-                logger.error(f"❌ Database error storing correction: {db_err}")
-                # Continue without failing - correction can still be processed
-        
-        # Update training patterns based on correction
-        if correction.get('correction_type') == 'dash_amount_recognition':
-            # Extract patterns from the correction
-            await _update_dash_patterns_from_correction(correction)
-        
+        if not ai_training_service:
+            raise HTTPException(status_code=500, detail="AI training service not available")
+
+        result = ai_training_service.submit_user_correction(correction)
+
         return JSONResponse({
-            "success": True,
-            "message": "User correction submitted successfully",
-            "correction_id": correction_id if 'correction_id' in locals() else None,
+            **result,
             "timestamp": datetime.now().isoformat()
         })
-    
+
     except Exception as e:
         logger.error(f"❌ Error submitting user correction: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1823,75 +1602,16 @@ async def get_dash_patterns():
     📊 Get learned dash amount patterns for AI training
     """
     try:
-        logger.info("📊 Getting dash patterns for training")
-        
-        patterns = []
-        
-        
-        # Get patterns from user corrections
-        if db_tools:
-            try:
-                conn = db_tools.connect()
-                if conn:
-                    with conn.cursor() as cursor:
-                        cursor.execute("""
-                            SELECT original_text, corrected_amount, invoice_type, 
-                                   COUNT(*) as correction_count,
-                                   AVG(confidence_score) as avg_confidence,
-                                   MAX(created_at) as last_updated
-                            FROM user_corrections 
-                            WHERE correction_type = 'dash_amount_recognition'
-                            GROUP BY original_text, corrected_amount, invoice_type
-                            ORDER BY correction_count DESC, last_updated DESC
-                            LIMIT 50
-                        """)
-                        
-                        results = cursor.fetchall()
-                        
-                        for row in results:
-                            original_text, corrected_amount, invoice_type, count, avg_confidence, last_updated = row
-                            
-                            # Generate pattern from the correction
-                            pattern = _generate_pattern_from_correction(original_text, corrected_amount)
-                            
-                            if pattern:
-                                patterns.append({
-                                    'pattern': pattern,
-                                    'confidence': min(avg_confidence + (count * 0.1), 1.0),  # Boost confidence with more corrections
-                                    'description': f'Learned from {count} user correction(s)',
-                                    'validated_by_corrections': count,
-                                    'invoice_type': invoice_type,
-                                    'last_updated': last_updated.isoformat() if hasattr(last_updated, 'isoformat') else str(last_updated)
-                                })
-            except Exception as db_err:
-                logger.error(f"❌ Database error getting dash patterns: {db_err}")
-        
-        # Add default patterns if no learned patterns
-        if not patterns:
-            patterns = [
-                {
-                    'pattern': r'(?:^\s*-\s*|-\s+)([0-9,\.]+)(?:\s*(?:vnd|đ|vnđ))?',
-                    'confidence': 0.8,
-                    'description': 'Default: Line starting with dash',
-                    'validated_by_corrections': 0,
-                    'invoice_type': 'general'
-                },
-                {
-                    'pattern': r'(\d+(?:,\d{3})*(?:\.\d{2})?)(?:\s*(?:vnd|đ|vnđ))?\s*$',
-                    'confidence': 0.6,
-                    'description': 'Default: Amount at end of line',
-                    'validated_by_corrections': 0,
-                    'invoice_type': 'general'
-                }
-            ]
-        
+        if not ai_training_service:
+            raise HTTPException(status_code=500, detail="AI training service not available")
+
+        result = ai_training_service.get_dash_patterns()
+
         return JSONResponse({
-            "success": True,
-            "patterns": patterns,
-            "count": len(patterns),
+            **result,
             "timestamp": datetime.now().isoformat()
         })
-    
+
     except Exception as e:
         logger.error(f"❌ Error getting dash patterns: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -2005,10 +1725,12 @@ async def chat_groq_options():
     return {"status": "ok"}
 
 @app.post("/chat/groq")
-async def chat_groq(request_body: Dict[str, Any]):
+async def chat_groq(request_body: Dict[str, Any], current_user = Depends(get_current_user_or_admin)):
     """
     💬 Chat with Groq AI using database tools
     Groq có thể gọi các API tools để thao tác với database
+
+    Requires authentication.
     """
     try:
         # Log raw request body for debugging 422 errors

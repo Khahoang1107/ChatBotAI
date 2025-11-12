@@ -21,7 +21,7 @@ from models.user import User, UserResponse
 from utils.database_tools import get_database_tools
 
 # Import auth utilities
-from auth_api import get_current_user
+from utils.auth_utils import get_current_admin_user, get_current_user
 
 # Database tools
 db_tools = get_database_tools()
@@ -38,13 +38,8 @@ admin_router = APIRouter(
     },
 )
 
-def require_admin(current_user: User = Depends(get_current_user)):
+def require_admin(current_user = Depends(get_current_admin_user)):
     """Dependency to ensure user is admin"""
-    if not current_user.is_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Admin access required"
-        )
     return current_user
 
 @admin_router.get(
