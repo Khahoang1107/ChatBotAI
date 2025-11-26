@@ -131,17 +131,17 @@ except Exception as e:
     logger.warning(f"⚠️ Export service not available: {e}")
     export_service = None
 
-# Import auth API router
+# Import auth API router (use simple mock version for now)
 try:
-    from auth_api import auth_router
-    logger.info("✅ Auth API router initialized")
+    from routers.simple_auth import router as auth_router
+    logger.info("✅ Simple Auth API router initialized")
 except Exception as e:
     logger.warning(f"⚠️ Auth API router not available: {e}")
     auth_router = None
 
 # Import admin API router
 try:
-    from admin_api import admin_router
+    from routers.admin import router as admin_router
     logger.info("✅ Admin API router initialized")
 except Exception as e:
     logger.warning(f"⚠️ Admin API router not available: {e}")
@@ -167,13 +167,13 @@ app.add_middleware(
 
 # Include auth router
 if auth_router:
-    app.include_router(auth_router, tags=["Authentication"])
-    logger.info("✅ Auth router included at /auth")
+    app.include_router(auth_router)
+    logger.info("✅ Auth router included at /api/auth")
 
 # Include admin router
 if admin_router:
-    app.include_router(admin_router, tags=["Admin"])
-    logger.info("✅ Admin router included at /admin")
+    app.include_router(admin_router)
+    logger.info("✅ Admin router included at /api/admin")
 
 # ===================== MODELS =====================
 
