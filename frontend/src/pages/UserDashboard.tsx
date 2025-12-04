@@ -5,6 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { ProfileSettings } from './ProfileSettings';
+import InvoiceManagement from './InvoiceManagement';
 import { 
   Bell, 
   LogOut, 
@@ -34,13 +35,16 @@ interface UserDashboardProps {
 }
 
 export function UserDashboard({ user, onLogout, onUpdateUser }: UserDashboardProps) {
+  const [currentView, setCurrentView] = useState<'dashboard' | 'invoices'>('dashboard');
   const [messages, setMessages] = useState([
-    { id: 1, text: 'Xin chào! Tôi là trợ lý AI của Invoice Manager. Tôi có thể giúp bạn quản lý hóa đơn, trả lời câu hỏi và hướng dẫn sử dụng hệ thống. Bạn cần hỗ trợ gì không?', sender: 'bot', time: '10:30' }
+    { id: 1, text: '👋 Xin chào! Tôi là trợ lý AI của Invoice Manager.\n\n💡 Gõ "Chatbot có thể làm gì?" để xem tất cả chức năng tôi có thể giúp bạn!', sender: 'bot', time: '10:30' }
   ]);
   const [inputMessage, setInputMessage] = useState('');
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [cameraActive, setCameraActive] = useState(false);
   const [isTyping, setIsTyping] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [showQuickSuggestions, setShowQuickSuggestions] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -56,24 +60,459 @@ export function UserDashboard({ user, onLogout, onUpdateUser }: UserDashboardPro
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   };
 
-  const handleSendMessage = () => {
+  const addBotMessage = (text: string) => {
+    const botTime = new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' });
+    setMessages(prev => [...prev, 
+      { id: prev.length + 1, text, sender: 'bot', time: botTime }
+    ]);
+    setTimeout(scrollToBottom, 100);
+  };
+
+  const handleQuickSuggestion = async (question: string) => {
+    const currentTime = new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' });
+    
+    // Add user message
+    setMessages(prev => [...prev, 
+      { id: prev.length + 1, text: question, sender: 'user', time: currentTime }
+    ]);
+    
+    // Send to chat API
+    setIsTyping(true);
+    
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ message: question })
+      });
+      
+      if (!response.ok) {
+        throw new Error('Chat API failed');
+      }
+      
+      const data = await response.json();
+      
+      setIsTyping(false);
+      addBotMessage(data.response);
+      
+      // Show action buttons ONLY if asking about capabilities
+      const isCapabilityQuestion = 
+        (question.toLowerCase().includes('làm gì') || 
+         question.toLowerCase().includes('chức năng') ||
+         question.toLowerCase().includes('features') ||
+         question.toLowerCase().includes('capabilities')) &&
+        (question.toLowerCase().includes('có thể') ||
+         question.toLowerCase().includes('bot') ||
+         question.toLowerCase().includes('chatbot') ||
+         question.toLowerCase().includes('hệ thống'));
+      
+      setShowQuickSuggestions(isCapabilityQuestion);
+    } catch (error) {
+      setIsTyping(false);
+      addBotMessage('Xin lỗi, tôi gặp sự cố khi xử lý tin nhắn. Vui lòng thử lại.');
+      console.error('Chat error:', error);
+    }
+  };
+  
+  const handleActionButton = async (action: string, params?: any) => {
+    const currentTime = new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' });
+    
+    setMessages(prev => [...prev, 
+      { id: prev.length + 1, text: action, sender: 'user', time: currentTime }
+    ]);
+    
+    setIsTyping(true);
+    
+    try {
+      const token = localStorage.getItem('token');
+      
+      if (action.includes('Xem danh sách')) {
+        // Call invoices API
+        const response = await fetch('/api/invoices', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        
+        if (response.ok) {
+          const data = await response.json();
+          const invoices = data.invoices;
+          
+          setIsTyping(false);
+          
+          if (invoices.length === 0) {
+            addBotMessage('📋 **Danh sách hóa đơn**\n\n⚠️ Chưa có hóa đơn nào được xử lý.\n\n💡 Hãy upload hoặc chụp hóa đơn để bắt đầu!');
+            return;
+          }
+          
+          let message = `📋 **Danh sách hóa đơn**\n━━━━━━━━━━━━━━━━━━━━\nTổng số: ${invoices.length} hóa đơn\n\n`;
+          
+          invoices.forEach((inv: any, idx: number) => {
+            const confidenceIcon = inv.confidence >= 0.8 ? '✅' : inv.confidence >= 0.6 ? '⚠️' : '❌';
+            const typeIcon = inv.invoice_type === 'momo_payment' ? '💳' : inv.invoice_type === 'electricity' ? '⚡' : '📄';
+            
+            message += `【${idx + 1}】 **${inv.invoice_code}**\n`;
+            message += `━━━━━━━━━━━━━━━━\n`;
+            message += `${typeIcon} Loại: ${inv.invoice_type === 'momo_payment' ? 'MoMo' : inv.invoice_type === 'electricity' ? 'Hóa đơn điện' : 'Thông thường'}\n`;
+            message += `📅 Ngày: ${inv.date}\n`;
+            message += `🏢 Người bán:\n   ${inv.seller_name}\n`;
+            message += `👤 Người mua:\n   ${inv.buyer_name}\n`;
+            message += `💰 Tổng tiền:\n   ${inv.total_amount}\n`;
+            message += `${confidenceIcon} Độ tin cậy: ${(inv.confidence * 100).toFixed(1)}%\n`;
+            message += `⏰ Xử lý lúc: ${inv.processed_at}\n`;
+            message += `\n`;
+          });
+          
+          message += '━━━━━━━━━━━━━━━━━━━━\n';
+          message += '💡 Gõ mã hóa đơn để xem chi tiết';
+          
+          addBotMessage(message);
+        } else {
+          throw new Error('Failed to fetch invoices');
+        }
+      } else if (action.includes('Tìm kiếm')) {
+        setIsTyping(false);
+        addBotMessage('🔍 **Tìm kiếm hóa đơn**\n\nVui lòng nhập mã hóa đơn bạn muốn tìm (ví dụ: INV-12345)');
+      } else if (action.includes('Lọc theo ngày')) {
+        setIsTyping(false);
+        addBotMessage('📅 **Lọc hóa đơn theo ngày**\n\nVui lòng nhập khoảng thời gian (ví dụ: "hóa đơn trong tháng 11" hoặc "từ 01/11 đến 30/11")');
+      } else if (action.includes('Xuất báo cáo')) {
+        setIsTyping(false);
+        addBotMessage('📊 **Đang chuyển đến trang quản lý hóa đơn...**\n\nTại đây bạn có thể:\n• Xem tất cả hóa đơn dạng bảng\n• Tìm kiếm và lọc\n• Xuất Excel hoặc PDF');
+        
+        setTimeout(() => {
+          setCurrentView('invoices');
+        }, 1000);
+      } else if (action.includes('Thống kê')) {
+        setIsTyping(false);
+        addBotMessage('📈 **Thống kê hóa đơn**\n\n📊 Dữ liệu tổng quan:\n• Tổng hóa đơn: 5\n• Đã thanh toán: 2\n• Chờ xử lý: 2\n• Quá hạn: 1\n\n💰 Tổng doanh thu: 8,450,000 VNĐ\n📅 Trung bình: 1,690,000 VNĐ/hóa đơn');
+      }
+    } catch (error) {
+      setIsTyping(false);
+      addBotMessage('❌ Có lỗi xảy ra. Vui lòng thử lại.');
+      console.error('Action error:', error);
+    }
+  };
+
+  const handleChatCommand = async (command: string) => {
+    const cmd = command.toLowerCase().trim();
+    
+    // View invoice list command
+    if (cmd.includes('xem') && (cmd.includes('danh sách') || cmd.includes('hóa đơn'))) {
+      await handleActionButton('📋 Xem danh sách hóa đơn');
+      return true;
+    }
+    
+    // Search invoice command
+    if (cmd.includes('tìm') && cmd.includes('hóa đơn')) {
+      await handleActionButton('🔍 Tìm kiếm hóa đơn');
+      return true;
+    }
+    
+    // Filter by date command
+    if (cmd.includes('lọc') || (cmd.includes('hóa đơn') && (cmd.includes('ngày') || cmd.includes('tháng') || cmd.includes('hôm nay')))) {
+      await handleActionButton('📅 Lọc theo ngày');
+      return true;
+    }
+    
+    // Export report command - redirect to invoice management page
+    if (cmd.includes('xuất') && (cmd.includes('báo cáo') || cmd.includes('excel') || cmd.includes('pdf') || cmd.includes('file'))) {
+      await handleActionButton('📊 Xuất báo cáo');
+      return true;
+    }
+    
+    // Direct "Quản lý hóa đơn" command
+    if (cmd.includes('quản lý') && cmd.includes('hóa đơn')) {
+      addBotMessage('📊 **Đang chuyển đến trang quản lý hóa đơn...**');
+      setTimeout(() => {
+        setCurrentView('invoices');
+      }, 500);
+      return true;
+    }
+    
+    // Statistics command
+    if (cmd.includes('thống kê') || cmd.includes('số liệu')) {
+      await handleActionButton('📈 Thống kê');
+      return true;
+    }
+    
+    // Camera commands
+    if (cmd.includes('mở camera') || cmd.includes('bật camera') || cmd.includes('chụp ảnh')) {
+      if (!cameraActive) {
+        await handleStartCamera();
+        addBotMessage('📷 **Đã mở camera!**\n\nCamera đang hoạt động. Bạn có thể:\n• Gõ "chụp ảnh" để chụp\n• Gõ "đóng camera" để tắt\n• Gõ "xử lý" để xử lý hóa đơn');
+      } else {
+        addBotMessage('📷 Camera đang mở rồi! Gõ "chụp ảnh" hoặc "xử lý" để tiếp tục.');
+      }
+      return true;
+    }
+    
+    if (cmd.includes('đóng camera') || cmd.includes('tắt camera')) {
+      if (cameraActive) {
+        handleStopCamera();
+        addBotMessage('📷 **Đã đóng camera!**\n\n💡 Gõ "mở camera" để mở lại.');
+      } else {
+        addBotMessage('📷 Camera chưa được mở.');
+      }
+      return true;
+    }
+    
+    if (cmd.includes('chụp') && cameraActive) {
+      handleCapturePhoto();
+      addBotMessage('📸 **Đã chụp ảnh!**\n\nẢnh đã được lưu. Gõ "xử lý" hoặc "xử lý hóa đơn" để phân tích.');
+      return true;
+    }
+    
+    // Process invoice command
+    if (cmd.includes('xử lý') || cmd.includes('phân tích') || cmd.includes('ocr')) {
+      if (uploadedFile || cameraActive) {
+        await handleProcessInvoice();
+        return true;
+      } else {
+        addBotMessage('⚠️ **Chưa có hóa đơn để xử lý!**\n\nVui lòng:\n• Gõ "mở camera" để chụp ảnh\n• Hoặc upload file từ nút bên trái');
+        return true;
+      }
+    }
+    
+    // Upload file command
+    if (cmd.includes('upload') || cmd.includes('tải lên')) {
+      addBotMessage('📤 **Upload hóa đơn:**\n\nNhấn vào nút "Upload File" 📁 ở bên trái để chọn file hình ảnh hóa đơn từ máy tính.\n\nSau khi chọn file, gõ "xử lý" để phân tích!');
+      return true;
+    }
+    
+    return false;
+  };
+
+  const handleProcessInvoice = async () => {
+    if (!uploadedFile && !cameraActive) return;
+    
+    setIsProcessing(true);
+    const currentTime = new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' });
+    
+    // Add user message
+    setMessages(prev => [...prev, 
+      { id: prev.length + 1, text: `Xử lý hóa đơn: ${uploadedFile?.name || 'Ảnh từ camera'}`, sender: 'user', time: currentTime }
+    ]);
+    
+    setIsTyping(true);
+    
+    try {
+      // Call real backend API
+      const formData = new FormData();
+      if (uploadedFile) {
+        formData.append('file', uploadedFile);
+      }
+      
+      const token = localStorage.getItem('token');
+      const response = await fetch('/api/upload', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        },
+        body: formData
+      });
+      
+      const data = await response.json();
+      
+      // Check for OCR error
+      if (data.status === 'error' && data.error === 'OCR_NOT_AVAILABLE') {
+        setIsTyping(false);
+        
+        let errorMessage = `❌ **${data.message}**\n\n`;
+        errorMessage += `⚠️ **Lý do:** ${data.details.reason}\n\n`;
+        errorMessage += `🔧 **Cách khắc phục:**\n\n`;
+        data.details.instructions.forEach((instruction: string, index: number) => {
+          errorMessage += `${instruction}\n`;
+        });
+        errorMessage += `\n📥 **Link tải:** ${data.details.download_url}\n\n`;
+        errorMessage += `💡 **Lưu ý:** Sau khi cài đặt, nhớ restart backend server!`;
+        
+        addBotMessage(errorMessage);
+        
+        setIsProcessing(false);
+        return;
+      }
+      
+      if (!response.ok) {
+        throw new Error('Upload failed');
+      }
+      const invoice = data.invoice;
+      
+      setIsTyping(false);
+      
+      // Bot response with invoice analysis
+      addBotMessage('🔍 Đang phân tích hóa đơn...');
+      
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+      const confidence = (invoice.confidence * 100).toFixed(1);
+      const confidenceIcon = invoice.confidence >= 0.8 ? '✅' : invoice.confidence >= 0.6 ? '⚠️' : '❌';
+      
+      let message = `${confidenceIcon} Đã xử lý hóa đơn! (Độ tin cậy: ${confidence}%)\n\n`;
+      
+      // Add warning for low confidence
+      if (invoice.confidence < 0.6) {
+        message += `⚠️ Lưu ý: Độ tin cậy thấp. Vui lòng kiểm tra lại thông tin.\n\n`;
+      }
+      
+      message += `📋 **Thông tin hóa đơn:**\n`;
+      message += `• Loại: ${invoice.invoice_type === 'momo_payment' ? '💳 Thanh toán MoMo' : invoice.invoice_type === 'electricity' ? '⚡ Hóa đơn điện' : '📄 Hóa đơn thông thường'}\n`;
+      message += `• Mã số: ${invoice.invoice_code}\n`;
+      message += `• Ngày: ${invoice.date}\n`;
+      message += `• Người bán: ${invoice.seller_name}\n`;
+      message += `• Người mua: ${invoice.buyer_name}\n`;
+      
+      // Add address if available
+      if (invoice.seller_address) {
+        message += `• Địa chỉ người bán: ${invoice.seller_address}\n`;
+      }
+      if (invoice.buyer_address) {
+        message += `• Địa chỉ người mua: ${invoice.buyer_address}\n`;
+      }
+      
+      // Add tax info if available
+      if (invoice.seller_tax_id) {
+        message += `• MST người bán: ${invoice.seller_tax_id}\n`;
+      }
+      if (invoice.buyer_tax_id) {
+        message += `• MST người mua: ${invoice.buyer_tax_id}\n`;
+      }
+      
+      message += `\n💰 **Chi tiết thanh toán:**\n`;
+      
+      if (invoice.subtotal > 0) {
+        message += `• Tổng trước thuế: ${invoice.subtotal.toLocaleString('vi-VN')} ${invoice.currency}\n`;
+      }
+      if (invoice.tax_amount > 0) {
+        message += `• Thuế VAT (${invoice.tax_percentage}%): ${invoice.tax_amount.toLocaleString('vi-VN')} ${invoice.currency}\n`;
+      }
+      message += `• **Tổng cộng: ${invoice.total_amount}**\n`;
+      
+      // Add items if available
+      if (invoice.items && invoice.items.length > 0) {
+        message += `\n📦 **Sản phẩm/Dịch vụ:**\n`;
+        invoice.items.forEach((item: any, index: number) => {
+          message += `${index + 1}. ${item.name || item.description || 'Không rõ'}`;
+          if (item.quantity) {
+            message += ` - SL: ${item.quantity}`;
+          }
+          if (item.price) {
+            message += ` - ${item.price.toLocaleString('vi-VN')} VNĐ`;
+          }
+          if (item.amount) {
+            message += ` (Tổng: ${item.amount.toLocaleString('vi-VN')} VNĐ)`;
+          }
+          message += '\n';
+        });
+      }
+      
+      // Show OCR text preview if available
+      if (data.ocr_text && invoice.confidence < 0.8) {
+        message += `\n📝 **Văn bản OCR (đầu tiên):**\n${data.ocr_text.substring(0, 200)}...\n`;
+      }
+      
+      message += `\n💾 Đã lưu vào hệ thống.`;
+      
+      if (invoice.confidence < 0.7) {
+        message += `\n\n💡 **Gợi ý:** Để cải thiện độ chính xác:\n• Chụp ảnh rõ nét hơn\n• Đảm bảo đủ ánh sáng\n• Giữ camera song song với hóa đơn\n• Cài đặt Tesseract OCR cho kết quả tốt hơn`;
+      }
+      
+      addBotMessage(message);
+      
+      // Clear uploaded file after processing
+      setUploadedFile(null);
+      
+      // Reset file input to allow re-uploading the same file
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+      
+      if (cameraActive) {
+        handleStopCamera();
+      }
+      
+      // Prompt for next action
+      setTimeout(() => {
+        addBotMessage('📤 **Tiếp theo:**\n\n• Upload file mới\n• Gõ "**mở camera**" để chụp tiếp\n• Gõ "**xem danh sách**" để xem tất cả hóa đơn');
+      }, 1000);
+      
+    } catch (error) {
+      setIsTyping(false);
+      addBotMessage('❌ Có lỗi xảy ra khi xử lý hóa đơn. Vui lòng thử lại!');
+      console.error('Error processing invoice:', error);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleSendMessage = async () => {
     if (inputMessage.trim()) {
       const currentTime = new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' });
+      const userMsg = inputMessage;
       setMessages([...messages, 
-        { id: messages.length + 1, text: inputMessage, sender: 'user', time: currentTime }
+        { id: messages.length + 1, text: userMsg, sender: 'user', time: currentTime }
       ]);
       setInputMessage('');
       setIsTyping(true);
       
-      // Simulate bot response
-      setTimeout(() => {
+      try {
+        // Call real chat API
+        const token = localStorage.getItem('token');
+        const response = await fetch('/api/chat', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({ message: userMsg })
+        });
+        
+        if (!response.ok) {
+          throw new Error('Chat API failed');
+        }
+        
+        const data = await response.json();
+        
+        // Check if it's a chat command first
+        const isCommand = await handleChatCommand(userMsg);
+        
+        if (!isCommand) {
+          setIsTyping(false);
+          const botTime = new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' });
+          setMessages(prev => [...prev, 
+            { id: prev.length + 1, text: data.response, sender: 'bot', time: botTime }
+          ]);
+          
+          // Show action buttons ONLY if asking about capabilities
+          const isCapabilityQuestion = 
+            (userMsg.toLowerCase().includes('làm gì') || 
+             userMsg.toLowerCase().includes('chức năng') ||
+             userMsg.toLowerCase().includes('features') ||
+             userMsg.toLowerCase().includes('capabilities')) &&
+            (userMsg.toLowerCase().includes('có thể') ||
+             userMsg.toLowerCase().includes('bạn') ||
+             userMsg.toLowerCase().includes('bot') ||
+             userMsg.toLowerCase().includes('chatbot') ||
+             userMsg.toLowerCase().includes('hệ thống'));
+          
+          setShowQuickSuggestions(isCapabilityQuestion);
+        } else {
+          setIsTyping(false);
+        }
+        
+        scrollToBottom();
+      } catch (error) {
         setIsTyping(false);
         const botTime = new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' });
         setMessages(prev => [...prev, 
-          { id: prev.length + 1, text: 'Cảm ơn bạn đã liên hệ! Tôi đã nhận được yêu cầu của bạn và sẽ xử lý ngay. Bạn có thể hỏi tôi về cách sử dụng camera, upload hóa đơn hoặc bất kỳ câu hỏi nào khác.', sender: 'bot', time: botTime }
+          { id: prev.length + 1, text: 'Xin lỗi, tôi gặp sự cố khi xử lý tin nhắn. Vui lòng thử lại.', sender: 'bot', time: botTime }
         ]);
+        console.error('Chat error:', error);
+        setShowQuickSuggestions(false);
         scrollToBottom();
-      }, 1500);
+      }
     }
   };
 
@@ -81,6 +520,7 @@ export function UserDashboard({ user, onLogout, onUpdateUser }: UserDashboardPro
     if (e.target.files && e.target.files[0]) {
       setUploadedFile(e.target.files[0]);
       setCameraActive(false);
+      addBotMessage(`📁 **Đã tải file:** ${e.target.files[0].name}\n\n💡 Gõ "**xử lý**" hoặc nhấn nút "Xử lý hóa đơn" để phân tích!`);
     }
   };
 
@@ -177,6 +617,11 @@ export function UserDashboard({ user, onLogout, onUpdateUser }: UserDashboardPro
         onUpdate={handleUpdateUser}
       />
     );
+  }
+
+  // Show Invoice Management Page
+  if (currentView === 'invoices') {
+    return <InvoiceManagement onBack={() => setCurrentView('dashboard')} />;
   }
 
   return (
@@ -345,7 +790,12 @@ export function UserDashboard({ user, onLogout, onUpdateUser }: UserDashboardPro
                       size="sm"
                       variant="outline"
                       className="mt-4 bg-gradient-to-r from-red-50 to-rose-50 hover:from-red-100 hover:to-rose-100 text-red-600 border-2 border-red-300 hover:border-red-400 hover:shadow-lg transition-all duration-200 hover:scale-105"
-                      onClick={() => setUploadedFile(null)}
+                      onClick={() => {
+                        setUploadedFile(null);
+                        if (fileInputRef.current) {
+                          fileInputRef.current.value = '';
+                        }
+                      }}
                     >
                       <X className="w-4 h-4 mr-2" />
                       Xóa file
@@ -408,15 +858,25 @@ export function UserDashboard({ user, onLogout, onUpdateUser }: UserDashboardPro
               {/* Process Button */}
               <Button 
                 className="w-full h-14 bg-gradient-to-r from-emerald-500 via-green-600 to-teal-600 hover:from-emerald-600 hover:via-green-700 hover:to-teal-700 shadow-xl hover:shadow-2xl hover:shadow-green-500/50 hover:scale-[1.02] transition-all duration-200 disabled:opacity-50 disabled:scale-100 disabled:cursor-not-allowed text-lg group border border-emerald-400/30"
-                disabled={!cameraActive && !uploadedFile}
+                disabled={(!cameraActive && !uploadedFile) || isProcessing}
+                onClick={handleProcessInvoice}
               >
                 <div className="flex items-center gap-2">
-                  <div className="w-8 h-8 bg-white/20 rounded-full flex items-center justify-center group-hover:rotate-90 transition-transform duration-300 backdrop-blur-sm border border-white/30">
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                    </svg>
-                  </div>
-                  <span>Xử lý hóa đơn</span>
+                  {isProcessing ? (
+                    <>
+                      <div className="w-5 h-5 border-2 border-white/20 border-t-white rounded-full animate-spin"></div>
+                      <span>Đang xử lý...</span>
+                    </>
+                  ) : (
+                    <>
+                      <div className="w-8 h-8 bg-white/20 rounded-full flex items-center justify-center group-hover:rotate-90 transition-transform duration-300 backdrop-blur-sm border border-white/30">
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                        </svg>
+                      </div>
+                      <span>Xử lý hóa đơn</span>
+                    </>
+                  )}
                 </div>
               </Button>
             </CardContent>
@@ -477,6 +937,83 @@ export function UserDashboard({ user, onLogout, onUpdateUser }: UserDashboardPro
                 ))}
                 
                 {/* Typing Indicator */}
+                {/* Quick Suggestions */}
+                {showQuickSuggestions && (
+                  <div className="flex flex-col gap-3 animate-in fade-in slide-in-from-bottom-3 duration-500">
+                    <div className="flex gap-3">
+                      <Avatar className="w-8 h-8 flex-shrink-0 bg-gradient-to-br from-green-500 to-emerald-500">
+                        <AvatarFallback className="text-white">AI</AvatarFallback>
+                      </Avatar>
+                      <div className="flex flex-col gap-2 flex-1">
+                        <div className="bg-gradient-to-r from-green-50 to-emerald-50 border border-green-200 px-4 py-3 rounded-2xl rounded-tl-sm shadow-sm">
+                          <p className="text-sm font-semibold text-green-800 mb-1">🎯 Tôi có thể giúp bạn:</p>
+                          <p className="text-xs text-green-600">Chọn một hành động bên dưới</p>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2 ml-11">
+                          <Button
+                            onClick={() => handleActionButton('📋 Xem danh sách hóa đơn')}
+                            variant="outline"
+                            className="justify-start text-left h-auto py-3 px-4 hover:bg-blue-50 hover:border-blue-400 hover:text-blue-700 transition-all duration-200 shadow-sm hover:shadow-md hover:scale-105"
+                          >
+                            <FileText className="w-4 h-4 mr-2 flex-shrink-0" />
+                            <span className="text-sm font-medium">Xem danh sách</span>
+                          </Button>
+                          <Button
+                            onClick={() => handleActionButton('🔍 Tìm kiếm hóa đơn')}
+                            variant="outline"
+                            className="justify-start text-left h-auto py-3 px-4 hover:bg-purple-50 hover:border-purple-400 hover:text-purple-700 transition-all duration-200 shadow-sm hover:shadow-md hover:scale-105"
+                          >
+                            <svg className="w-4 h-4 mr-2 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                            </svg>
+                            <span className="text-sm font-medium">Tìm kiếm</span>
+                          </Button>
+                          <Button
+                            onClick={() => handleActionButton('📅 Lọc theo ngày')}
+                            variant="outline"
+                            className="justify-start text-left h-auto py-3 px-4 hover:bg-green-50 hover:border-green-400 hover:text-green-700 transition-all duration-200 shadow-sm hover:shadow-md hover:scale-105"
+                          >
+                            <svg className="w-4 h-4 mr-2 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                            </svg>
+                            <span className="text-sm font-medium">Lọc theo ngày</span>
+                          </Button>
+                          <Button
+                            onClick={() => handleActionButton('📊 Xuất báo cáo')}
+                            variant="outline"
+                            className="justify-start text-left h-auto py-3 px-4 hover:bg-orange-50 hover:border-orange-400 hover:text-orange-700 transition-all duration-200 shadow-sm hover:shadow-md hover:scale-105"
+                          >
+                            <svg className="w-4 h-4 mr-2 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                            </svg>
+                            <span className="text-sm font-medium">Xuất báo cáo</span>
+                          </Button>
+                          <Button
+                            onClick={() => handleActionButton('📈 Thống kê')}
+                            variant="outline"
+                            className="justify-start text-left h-auto py-3 px-4 hover:bg-pink-50 hover:border-pink-400 hover:text-pink-700 transition-all duration-200 shadow-sm hover:shadow-md hover:scale-105"
+                          >
+                            <svg className="w-4 h-4 mr-2 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                            </svg>
+                            <span className="text-sm font-medium">Thống kê</span>
+                          </Button>
+                          <Button
+                            onClick={() => handleQuickSuggestion('Hướng dẫn sử dụng hệ thống')}
+                            variant="outline"
+                            className="justify-start text-left h-auto py-3 px-4 hover:bg-indigo-50 hover:border-indigo-400 hover:text-indigo-700 transition-all duration-200 shadow-sm hover:shadow-md hover:scale-105"
+                          >
+                            <svg className="w-4 h-4 mr-2 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                            </svg>
+                            <span className="text-sm font-medium">Hướng dẫn</span>
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 {isTyping && (
                   <div className="flex gap-3 animate-in fade-in slide-in-from-bottom-3 duration-300">
                     <Avatar className="w-8 h-8 flex-shrink-0 bg-gradient-to-br from-green-500 to-emerald-500">

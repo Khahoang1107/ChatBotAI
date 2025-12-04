@@ -37,18 +37,36 @@ class ServiceContainer:
         self._settings = settings
     
     @property
+    def settings(self):
+        """Get application settings"""
+        return self._settings
+    
+    @property
+    def engine(self):
+        """Get database engine with lazy initialization"""
+        if self._engine is None:
+            # SQLite doesn't support pool_size, so check database type
+            if "sqlite" in self._settings.DATABASE_URL:
+                self._engine = create_engine(
+                    self._settings.DATABASE_URL,
+                    echo=getattr(self._settings, 'DEBUG', False)
+                )
+            else:
+                self._engine = create_engine(
+                    self._settings.DATABASE_URL,
+                    pool_size=getattr(self._settings, 'DATABASE_POOL_SIZE', 5),
+                    max_overflow=getattr(self._settings, 'DATABASE_MAX_OVERFLOW', 10),
+                    echo=getattr(self._settings, 'DEBUG', False)
+                )
+        return self._engine
+    
+    @property
     def db(self) -> Session:
         """Get database session with lazy initialization"""
         if self._db is None:
             try:
-                if self._engine is None:
-                    self._engine = create_engine(
-                        self._settings.DATABASE_URL,
-                        pool_size=self._settings.DB_POOL_SIZE,
-                        max_overflow=self._settings.DB_POOL_OVERFLOW,
-                        echo=self._settings.DEBUG
-                    )
-                SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=self._engine)
+                engine = self.engine
+                SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
                 self._db = SessionLocal()
                 logger.info("Database session initialized")
             except Exception as e:

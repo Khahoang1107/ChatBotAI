@@ -49,9 +49,9 @@ load_dotenv()
 
 # Import database tools (now in backend/utils)
 try:
-    from utils.database_tools import get_database_tools
+    from utils.database_tools_sqlite import get_database_tools
     db_tools = get_database_tools()
-    logger.info("✅ Database tools initialized")
+    logger.info("✅ SQLite database tools initialized")
 except Exception as e:
     logger.warning(f"⚠️ Database tools not available: {e}")
     db_tools = None
@@ -66,14 +66,15 @@ except Exception as e:
 
 # Import chat handlers (now in backend/handlers)
 try:
-    from handlers.chat_handler import ChatHandler
-    from handlers.hybrid_chat_handler import HybridChatBot
-    from handlers.groq_chat_handler import GroqChatHandler
-    # chat_handler = ChatHandler()  # Temporarily disabled due to training client connection issue
+    # Temporarily disabled due to missing models
+    # from handlers.chat_handler import ChatHandler
+    # from handlers.hybrid_chat_handler import HybridChatBot
+    # from handlers.groq_chat_handler import GroqChatHandler
+    # chat_handler = ChatHandler()
     # hybrid_chat = HybridChatBot()
     chat_handler = None
     hybrid_chat = None
-    logger.info("✅ Chat handlers initialized (disabled for now)")
+    logger.info("✅ Chat handlers disabled (models not available)")
 except Exception as e:
     logger.warning(f"⚠️ Chat handlers not available: {e}")
     chat_handler = None
@@ -81,10 +82,14 @@ except Exception as e:
 
 # Import Groq tools
 try:
-    from groq_tools import GroqDatabaseTools, DecimalEncoder
-    groq_tools = GroqDatabaseTools(db_tools)
-    groq_chat_handler = GroqChatHandler(db_tools=db_tools, groq_tools=groq_tools)
-    logger.info("✅ Groq tools and handler initialized")
+    # Temporarily disabled due to missing dependencies
+    # from groq_tools import GroqDatabaseTools, DecimalEncoder
+    # groq_tools = GroqDatabaseTools(db_tools)
+    # groq_chat_handler = GroqChatHandler(db_tools=db_tools, groq_tools=groq_tools)
+    groq_tools = None
+    groq_chat_handler = None
+    DecimalEncoder = None
+    logger.info("✅ Groq tools disabled (dependencies not available)")
 except Exception as e:
     logger.warning(f"⚠️ Groq tools not available: {e}")
     groq_tools = None

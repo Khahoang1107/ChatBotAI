@@ -1,13 +1,11 @@
 """
 Database Tools for RAG Chatbot
-Provides PostgreSQL query functions for chatbot to access real invoice data
+Provides SQLite/PostgreSQL query functions for chatbot to access real invoice data
 """
 
-import psycopg2
-from psycopg2.extras import RealDictCursor
-from psycopg2 import pool
-from typing import Dict, List, Optional, Any
+import sqlite3
 import logging
+from typing import Dict, List, Optional, Any
 from datetime import datetime
 import time
 import os
@@ -15,18 +13,18 @@ import os
 logger = logging.getLogger(__name__)
 
 class DatabaseTools:
-    """Tools for querying PostgreSQL database with connection pooling"""
+    """Tools for querying database with SQLite/PostgreSQL support"""
     
     def __init__(self, connection_string: str = None):
-        """Initialize database connection pool"""
+        """Initialize database connection"""
         if connection_string is None:
             connection_string = os.getenv(
                 "DATABASE_URL", 
-                "postgresql://postgres:123@localhost:5432/ocr_database_new"
+                "sqlite:///chatbot.db"
             )
         
         self.connection_string = connection_string
-        self.connection_pool = None
+        self.is_sqlite = connection_string.startswith("sqlite://")
         self.max_retries = 3
         self.retry_delay = 1.0  # seconds
         

@@ -11,6 +11,7 @@ from core.exceptions import (
 )
 from core.dependencies import container
 from schemas.models import UserCreate, UserResponse
+from models.user import User
 
 
 class UserService:
@@ -42,7 +43,14 @@ class UserService:
             )
             self.db.add(user)
             self.db.commit()
-            return UserResponse.from_orm(user)
+            self.db.refresh(user)
+            return UserResponse(
+                id=user.id,
+                email=user.email,
+                name=user.name,
+                created_at=user.created_at,
+                is_active=user.is_active
+            )
         except ValidationException:
             raise
         except Exception as e:
@@ -116,14 +124,3 @@ class UserService:
             raise AuthenticationException("Token has expired")
         except jwt.InvalidTokenError:
             raise AuthenticationException("Invalid token")
-
-
-# Placeholder for User ORM model (to be created in models/)
-class User:
-    """User database model placeholder"""
-    id: int
-    email: str
-    name: Optional[str]
-    hashed_password: str
-    is_active: bool
-    created_at: datetime

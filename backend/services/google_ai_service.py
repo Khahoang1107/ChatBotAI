@@ -6,11 +6,11 @@ import sys
 
 # Import config
 try:
-    from config import Config
+    from config.settings import settings as Config
 except ImportError:
     # Fallback for relative import issues
     sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-    from config import Config
+    from config.settings import settings as Config
 
 class GoogleAIService:
     def __init__(self):

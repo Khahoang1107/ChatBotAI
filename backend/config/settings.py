@@ -55,6 +55,7 @@ class Settings(BaseSettings):
     # Environment
     ENVIRONMENT: str = os.getenv("ENVIRONMENT", "development")
     DEBUG: bool = ENVIRONMENT == "development"
+    PORT: int = 8000
     
     class Config:
         env_file = ".env"

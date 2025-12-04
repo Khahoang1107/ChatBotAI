@@ -4,7 +4,7 @@ import requests
 import os
 from datetime import datetime
 from typing import Dict, List, Any, Optional
-from config import Config
+from config.settings import settings as Config
 from models.ai_model import AIModel
 from utils.text_processor import TextProcessor
 from utils.training_client import TrainingDataClient

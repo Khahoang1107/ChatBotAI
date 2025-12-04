@@ -66,6 +66,16 @@ async def lifespan(app: FastAPI):
     logger.info(f"Database: {settings.DATABASE_URL}")
     
     try:
+        # Create database tables
+        from models.user import Base
+        from models.chat import ChatHistory, UserSession
+        engine = container.engine
+        Base.metadata.create_all(bind=engine)
+        logger.info("✅ Database tables created")
+    except Exception as e:
+        logger.warning(f"⚠️ Could not create tables: {str(e)}")
+    
+    try:
         # Test database connection
         _ = container.db
         logger.info("✅ Database connection established")
@@ -109,7 +119,7 @@ app.add_middleware(LoggingMiddleware)
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS,
+    allow_origins=settings.ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -175,10 +185,10 @@ async def health_check():
 # Register routers (new architecture)
 logger.info("Registering API routers...")
 
-# New modular routers
-app.include_router(auth.router, prefix="/api/v1")
-app.include_router(chat.router, prefix="/api/v1")
-app.include_router(upload.router, prefix="/api/v1")
+# New modular routers - no prefix since routers already have /api/auth, /api/chat, etc.
+app.include_router(auth.router)
+app.include_router(chat.router)
+app.include_router(upload.router)
 
 logger.info("✅ API routers registered")
 
