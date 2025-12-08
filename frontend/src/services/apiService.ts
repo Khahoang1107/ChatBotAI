@@ -141,7 +141,7 @@ class APIService {
   /**
    * Upload invoice image for OCR processing
    */
-  async uploadInvoice(file: File): Promise<{ job_id: string; status: string }> {
+  async uploadInvoice(file: File): Promise<any> {
     const token = localStorage.getItem('token');
     const formData = new FormData();
     formData.append('file', file);

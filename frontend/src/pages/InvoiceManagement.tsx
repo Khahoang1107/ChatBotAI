@@ -46,16 +46,30 @@ const InvoiceManagement: React.FC<InvoiceManagementProps> = ({ onBack }) => {
   const fetchInvoices = async () => {
     try {
       const token = localStorage.getItem('token');
-      const response = await fetch('/api/invoices', {
+      console.log('🔍 Fetching invoices from /api/invoices...');
+      
+      const response = await fetch('/api/invoices?limit=100', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       
+      console.log('📡 Response status:', response.status, response.ok);
+      
       if (response.ok) {
         const data = await response.json();
-        setInvoices(data.invoices);
+        console.log('✅ Received data:', data);
+        console.log('📊 Invoices count:', data.invoices?.length || 0);
+        
+        if (data.invoices && Array.isArray(data.invoices)) {
+          setInvoices(data.invoices);
+          console.log('✅ Set invoices:', data.invoices.length);
+        } else {
+          console.error('❌ Invalid data format:', data);
+        }
+      } else {
+        console.error('❌ Response not OK:', response.status, await response.text());
       }
     } catch (error) {
-      console.error('Error fetching invoices:', error);
+      console.error('❌ Error fetching invoices:', error);
     } finally {
       setLoading(false);
     }

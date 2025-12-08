@@ -4,29 +4,14 @@ import requests
 import os
 from datetime import datetime
 from typing import Dict, List, Any, Optional
-from config.settings import settings as Config
-from models.ai_model import AIModel
-from utils.text_processor import TextProcessor
-from utils.training_client import TrainingDataClient
+from config.settings import settings
 import logging
-
-# Import Google AI Service
-try:
-    import sys
-    import os
-    sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-    from services.google_ai_service import GoogleAIService
-except ImportError as e:
-    print(f"Google AI Service import failed: {e}")
-    GoogleAIService = None
 
 logger = logging.getLogger(__name__)
 
 class ChatHandler:
     def __init__(self):
-        self.config = Config()  # ⭐ Initialize config
-        self.ai_model = AIModel()
-        self.text_processor = TextProcessor()
+        self.config = settings  # Use settings instance directly
         self.conversation_history = {}
         
         # Rasa integration - DISABLED
@@ -1249,12 +1234,13 @@ Bạn muốn thử upload hóa đơn để training không?''',
             
             # Call backend API to get saved invoices
             response = requests.get(
-                f"{self.config.BACKEND_URL}/api/ocr/saved-invoices",
-                params={'limit': 50}  # Get more for filtering
+                f"{self.config.BACKEND_URL}/api/invoices",
+                params={'limit': 100}  # Get more for filtering
             )
             
             if response.status_code == 200:
-                invoices = response.json()
+                result = response.json()
+                invoices = result.get('invoices', [])
                 
                 # ⭐ Filter by date if specified
                 if target_date:

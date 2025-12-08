@@ -38,6 +38,8 @@ Thumbs.db
 *.db
 *.sqlite
 *.sqlite3
+# Allow backend database to be committed
+!backend/chatbot.db
 
 # Environment variables
 .env

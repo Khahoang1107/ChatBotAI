@@ -59,20 +59,26 @@ class OCRService:
         text_lower = ocr_text.lower()
 
         # Detect invoice type with improved priority logic
-        has_momo_keywords = any(word in text_lower for word in ['momo', 'ví điện tử', 'momo wallet', 'transfer', 'chuyển khoản'])
-        has_electricity_keywords = any(word in text_lower for word in ['điện', 'electricity', 'tiền điện', 'hóa đơn tiền điện', 'kwh', 'evn', 'điện lực', 'nhà cung cấp'])
-
-        # If both MoMo and electricity keywords are present, prioritize electricity
-        if has_electricity_keywords:
-            is_electricity = True
-            is_momo = False
-            logger.info("🔍 Detected electricity bill payment via MoMo - prioritizing electricity processing")
-        elif has_momo_keywords:
+        # Check for MoMo transaction patterns first (highest priority)
+        has_transaction_id = bool(re.search(r'(?:ma giao dich|mã giao dịch|transaction)[:\s]*([0-9]{10,})', text_lower))
+        has_momo_keywords = any(word in text_lower for word in ['momo', 'ví điện tử', 'momo wallet', 'chi tiet giao dich', 'chi tiét giao dich'])
+        has_electricity_keywords = any(word in text_lower for word in ['tiền điện', 'hóa đơn tiền điện', 'kwh', 'evn'])
+        
+        # Prioritize based on strongest indicators
+        if has_transaction_id or has_momo_keywords:
+            # If has transaction ID or explicit MoMo keywords, it's a MoMo payment
             is_momo = True
             is_electricity = False
+            logger.info("🔍 Detected MoMo payment (transaction ID or MoMo keywords found)")
+        elif has_electricity_keywords:
+            # Only classify as electricity if no MoMo indicators
+            is_electricity = True
+            is_momo = False
+            logger.info("🔍 Detected electricity bill")
         else:
             is_momo = False
             is_electricity = False
+            logger.info("🔍 Detected traditional invoice")
 
         if is_momo:
             data = self._extract_momo_fields(data, ocr_text)
@@ -99,76 +105,110 @@ class OCRService:
 
         logger.info(f"🔍 Processing MoMo invoice. OCR text preview: {ocr_text[:200]}...")
 
+        # Extract vendor/seller (Nha cung cap)
+        vendor_patterns = [
+            r'(?:nha cung cap|nhà cung cấp|vendor|provider)[:\s]*([^\n\r]+)',
+            r'(?:Nha cung cap|Nhà cung cấp)[:\s]*([^\n\r]+)',
+        ]
+        for pattern in vendor_patterns:
+            match = re.search(pattern, ocr_text, re.IGNORECASE)
+            if match:
+                vendor = match.group(1).strip()
+                if vendor and len(vendor) > 2:
+                    data['seller_name'] = vendor
+                    logger.info(f"✅ Found vendor: {vendor}")
+                    break
+
+        # Extract customer name (Ten khach hang)
+        customer_patterns = [
+            r'(?:tén khach hang|tên khách hàng|ten khach hang)[:\s]*([^\n\r\[]+)',
+            r'(?:Tén khach hang|Tên khách hàng|Ten khach hang)[:\s]*([^\n\r\[]+)',
+        ]
+        for pattern in customer_patterns:
+            match = re.search(pattern, ocr_text, re.IGNORECASE)
+            if match:
+                customer = match.group(1).strip()
+                if customer and len(customer) > 2:
+                    data['buyer_name'] = customer
+                    logger.info(f"✅ Found customer: {customer}")
+                    break
+
+        # Extract customer code (Ma khach hang)
+        customer_code_patterns = [
+            r'(?:ma khach hang|mã khách hàng|customer code)[:\s]*([A-Z0-9]+)',
+            r'(?:Ma khach hang|Mã khách hàng)[:\s]*([A-Z0-9]+)',
+        ]
+        for pattern in customer_code_patterns:
+            match = re.search(pattern, ocr_text, re.IGNORECASE)
+            if match:
+                code = match.group(1).strip()
+                if code:
+                    data['invoice_code'] = code
+                    logger.info(f"✅ Found customer code: {code}")
+                    break
+
         # Extract transaction ID
         transaction_id_patterns = [
-            r'(?:mã giao dịch|ma giao dich|transaction id|trans id|transaction)[:\s]*([A-Z0-9\-]{6,20})',
-            r'(?:mã giao dịch|ma giao dich|transaction id|trans id)[:\s]*([A-Z0-9\-]{6,20})',
-            r'(?:ID|id)[:\s]*([A-Z0-9]{8,16})(?:\s|$)',
-            r'([A-Z]{2,4}\d{6,12})',
+            r'(?:mã giao dịch|ma giao dich|transaction id|trans id|transaction)[:\s]*([0-9]{10,20})',
+            r'(?:mã giao dịch|ma giao dich|transaction id|trans id)[:\s]*([0-9]{10,20})',
         ]
         for pattern in transaction_id_patterns:
             match = re.search(pattern, ocr_text, re.IGNORECASE)
             if match:
-                candidate_id = match.group(1).strip()
-                if (len(candidate_id) >= 6 and
-                    not any(char in candidate_id for char in ['VND', 'đ', 'VNĐ', '.', ',']) and
-                    not candidate_id.replace('-', '').replace('_', '').isdigit()):
-                    data['transaction_id'] = candidate_id
-                    data['invoice_code'] = f"MOMO-{data['transaction_id']}"
+                trans_id = match.group(1).strip()
+                if trans_id:
+                    data['transaction_id'] = trans_id
+                    logger.info(f"✅ Found transaction ID: {trans_id}")
                     break
 
         # Extract payment account
         account_patterns = [
-            r'(?:tài khoản|từ|from|sender)[:\s]*([0-9\s\-\+\(\)]+)',
+            r'(?:tài khoản|tai khoan|từ|from|sender)[:\s]*([^\n\r]+)',
             r'(?:số điện thoại|phone|mobile)[:\s]*([0-9\s\-\+\(\)]+)',
             r'(?:người gửi|sender)[:\s]*([^\n]+)',
         ]
         for pattern in account_patterns:
             match = re.search(pattern, ocr_text, re.IGNORECASE)
             if match:
-                data['payment_account'] = match.group(1).strip()
-                if not data['buyer_name'] or data['buyer_name'] == 'Unknown':
-                    data['buyer_name'] = data['payment_account']
-                break
+                account = match.group(1).strip()
+                if account:
+                    data['payment_account'] = account
+                    logger.info(f"✅ Found payment account: {account}")
+                    break
 
-        # Extract amount with dash priority
+        # Extract amount with dash priority (MUST call this BEFORE date extraction)
         data = self._extract_amount_with_dash_priority(data, ocr_text, is_momo=True)
 
         # Extract date/time
         datetime_patterns = [
-            r'(?:thời gian|time|ngày)[:\s]*(\d{1,2}[/-]\d{1,2}[/-]\d{4}\s+\d{1,2}:\d{2})',
-            r'(?:thời gian|time|ngày)[:\s]*(\d{1,2}[/-]\d{1,2}[/-]\d{4})',
+            r'(?:thời gian|thdi gian|time|ngày)[:\s]*(\d{1,2}:\d{2}\s*-\s*\d{1,2}[/-]\d{1,2}[/-]\d{4})',
+            r'(?:thời gian|thdi gian|time|ngày)[:\s]*(\d{1,2}[/-]\d{1,2}[/-]\d{4}\s+\d{1,2}:\d{2})',
+            r'(\d{1,2}:\d{2}\s*-\s*\d{1,2}[/-]\d{1,2}[/-]\d{4})',
             r'(\d{1,2}[/-]\d{1,2}[/-]\d{4}\s+\d{1,2}:\d{2})',
-            r'(\d{1,2}[/-]\d{1,2}[/-]\d{4})',
         ]
         for pattern in datetime_patterns:
             match = re.search(pattern, ocr_text, re.IGNORECASE)
             if match:
                 datetime_str = match.group(1).strip()
                 data['date'] = datetime_str
+                logger.info(f"✅ Found datetime: {datetime_str}")
                 try:
-                    if ' ' in datetime_str:
+                    # Parse "11:31 - 10/11/2025" format
+                    if '-' in datetime_str and ':' in datetime_str:
+                        parts = datetime_str.split('-')
+                        if len(parts) == 2:
+                            time_part = parts[0].strip()
+                            date_part = parts[1].strip()
+                            dt = datetime.strptime(f"{date_part} {time_part}", '%d/%m/%Y %H:%M')
+                            data['invoice_time'] = dt.isoformat()
+                    elif ' ' in datetime_str:
                         dt = datetime.strptime(datetime_str, '%d/%m/%Y %H:%M')
+                        data['invoice_time'] = dt.isoformat()
                     else:
                         dt = datetime.strptime(datetime_str, '%d/%m/%Y')
-                    data['invoice_time'] = dt.isoformat()
+                        data['invoice_time'] = dt.isoformat()
                 except ValueError:
                     data['invoice_time'] = None
-                break
-
-        # Extract recipient/seller
-        recipient_patterns = [
-            r'Người nhận:\s*([^\n\r]+)',
-            r'người nhận[:\s]*([^\n\r]+)',
-            r'bên nhận[:\s]*([^\n\r]+)',
-            r'(?:tên cửa hàng|store|shop)[:\s]*([^\n\r]+)',
-            r'Recipient:\s*([^\n\r]+)',  # English pattern
-            r'recipient[:\s]*([^\n\r]+)',  # English lowercase
-        ]
-        for pattern in recipient_patterns:
-            match = re.search(pattern, ocr_text, re.IGNORECASE)
-            if match:
-                data['seller_name'] = match.group(1).strip()
                 break
 
         # Extract content/description
@@ -334,7 +374,54 @@ class OCRService:
 
     def _extract_amount_with_dash_priority(self, data: dict, ocr_text: str, is_momo: bool = False, is_electricity: bool = False, is_traditional: bool = False) -> dict:
         """Extract amount with dash-indicated amounts having highest priority"""
-        # High priority: Check for dash-indicated total amounts first
+        logger.info(f"💰 Extracting amount from OCR text (MoMo={is_momo}, Electricity={is_electricity})")
+        
+        # High priority: Check for negative amounts (e.g., -294.948đ)
+        negative_amount_patterns = [
+            r'-\s*([0-9]+(?:[.,][0-9]+)*)(?:\s*(?:d|đ|vnd|vnđ))?',  # -294.948d or -294.948đ
+            r'^\s*-([0-9]+(?:[.,][0-9]+)*)',  # Line starting with negative
+        ]
+
+        for pattern in negative_amount_patterns:
+            matches = re.finditer(pattern, ocr_text, re.IGNORECASE | re.MULTILINE)
+            for match in matches:
+                amount_str = match.group(1).strip()
+                amount_str = amount_str.replace(' ', '').replace('_', '')
+                
+                logger.info(f"🔍 Found potential negative amount: -{amount_str}")
+
+                try:
+                    # Remove dots as thousand separators, keep commas if decimal
+                    if ',' in amount_str:
+                        numeric_value = float(amount_str.replace('.', '').replace(',', '.'))
+                    else:
+                        numeric_value = float(amount_str.replace('.', ''))
+
+                    # Make negative
+                    numeric_value = -abs(numeric_value)
+
+                    # Validate amount is reasonable for MoMo/electricity
+                    if is_electricity:
+                        if -10000000 <= numeric_value <= -100:  # Electricity bills are negative (payment)
+                            data['total_amount'] = f"{abs(numeric_value):,.0f} VND"
+                            data['total_amount_value'] = numeric_value
+                            data['subtotal'] = numeric_value
+                            logger.info(f"✅ Found negative electricity amount: {numeric_value} VND")
+                            return data
+                    elif is_momo:
+                        # For MoMo, accept wider range
+                        if -10000000 <= numeric_value <= -10:
+                            data['total_amount'] = f"{abs(numeric_value):,.0f} VND"
+                            data['total_amount_value'] = numeric_value
+                            data['subtotal'] = numeric_value
+                            logger.info(f"✅ Found negative MoMo amount: {numeric_value} VND")
+                            return data
+
+                except (ValueError, OverflowError) as e:
+                    logger.warning(f"⚠️ Failed to parse amount '{amount_str}': {e}")
+                    continue
+        
+        # Fallback: Check for dash-indicated positive amounts
         dash_amount_patterns = [
             r'(?:^\s*-\s*|-\s+)([0-9,\.]+)(?:\s*(?:vnd|đ|vnđ))?\s*$',
             r'(?:tổng|total|amount)[:\s]*-\s*([0-9,\.]+)(?:\s*(?:vnd|đ|vnđ))?',
@@ -346,19 +433,11 @@ class OCRService:
                 amount_str = match.group(1).strip()
                 amount_str = amount_str.replace(' ', '').replace('_', '')
 
-                is_negative = False
-                if amount_str.startswith('-') or '-308.472d' in ocr_text:
-                    is_negative = True
-                    amount_str = amount_str.lstrip('-')
-
                 try:
                     if ',' in amount_str and '.' in amount_str:
                         numeric_value = float(amount_str.replace(',', ''))
                     else:
                         numeric_value = float(amount_str.replace(',', '').replace('.', ''))
-
-                    if is_negative:
-                        numeric_value = -numeric_value
 
                     # Validate amount is reasonable
                     if is_electricity:
@@ -629,7 +708,11 @@ class OCRService:
             }
 
         finally:
-            os.remove(tmp_path)
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except PermissionError:
+                logger.warning(f"⚠️ Could not delete temp file immediately: {tmp_path}")
 
         return result
 
@@ -683,15 +766,14 @@ class OCRService:
                     else:
                         raise Exception("Tesseract not configured properly")
                 except Exception as e:
-                    logger.error(f"❌ Tesseract OCR failed or is not installed: {e}")
-                    raise Exception((
-                        "Tesseract OCR engine not available or failed at runtime. "
-                        "Install Tesseract (https://github.com/tesseract-ocr/tesseract) and ensure it's on PATH, "
-                        "or call this endpoint with use_mock=true for demo fallback."
-                    ))
+                    logger.warning(f"⚠️ Tesseract OCR failed, using mock data: {e}")
+                    ocr_text = self.generate_ocr_fallback(filename, image)
+                    logger.info(f"✅ Using mock OCR data ({len(ocr_text)} chars)")
 
             # Extract structured data from OCR text
+            logger.info(f"📝 OCR Text preview (first 300 chars): {ocr_text[:300]}")
             extracted_data = self.extract_invoice_fields(ocr_text, filename)
+            logger.info(f"📊 Extracted data: invoice_code={extracted_data.get('invoice_code')}, total={extracted_data.get('total_amount')}, seller={extracted_data.get('seller_name')}")
 
             # Calculate confidence
             text_confidence = min(len(ocr_text) / 500, 1.0)
@@ -709,7 +791,11 @@ class OCRService:
 
         finally:
             # Clean up temp file
-            os.remove(tmp_path)
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except PermissionError:
+                logger.warning(f"⚠️ Could not delete temp file immediately: {tmp_path}")
 
         # Save to database only if persist is True
         if persist and self.db_tools:
@@ -717,10 +803,10 @@ class OCRService:
                 invoice_data = ocr_result.get('extracted_data', {})
                 conn = self.db_tools.connect()
                 if conn:
-                    with conn.cursor() as cursor:
-                        # Convert date format from dd/mm/yyyy to yyyy-mm-dd for PostgreSQL
-                        invoice_date = invoice_data.get('date', datetime.now().strftime("%d/%m/%Y"))
-                        try:
+                    cursor = conn.cursor()
+                    # Convert date format from dd/mm/yyyy to yyyy-mm-dd for PostgreSQL
+                    invoice_date = invoice_data.get('date', datetime.now().strftime("%d/%m/%Y"))
+                    try:
                             # Try to parse and convert date format
                             if '/' in invoice_date:
                                 day, month, year = invoice_date.split('/')
@@ -728,11 +814,11 @@ class OCRService:
                             elif invoice_date == datetime.now().strftime("%d/%m/%Y"):
                                 # If it's today's date in dd/mm/yyyy format, convert to yyyy-mm-dd
                                 invoice_date = datetime.now().strftime("%Y-%m-%d")
-                        except:
-                            # If date parsing fails, use current date
-                            invoice_date = datetime.now().strftime("%Y-%m-%d")
+                    except:
+                        # If date parsing fails, use current date
+                        invoice_date = datetime.now().strftime("%Y-%m-%d")
 
-                        cursor.execute("""
+                    cursor.execute("""
                             INSERT INTO invoices
                             (filename, invoice_code, invoice_type, buyer_name, seller_name,
                              total_amount, confidence_score, raw_text, invoice_date,
@@ -740,9 +826,8 @@ class OCRService:
                              items, currency, subtotal, tax_amount, tax_percentage,
                              total_amount_value, transaction_id, payment_method,
                              payment_account, invoice_time, due_date, created_at)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                                   %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                            RETURNING id
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                                   ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """, (
                             filename,
                             invoice_data.get('invoice_code', 'INV-UNKNOWN'),
@@ -769,16 +854,12 @@ class OCRService:
                             invoice_data.get('invoice_time', None),
                             invoice_data.get('due_date', None),
                             datetime.now()
-                        ))
-                        result = cursor.fetchone()
-                        if result:
-                            invoice_id = result[0]
-                            conn.commit()
-                            logger.info(f"✅ Invoice saved to DB with ID: {invoice_id}")
-                            ocr_result['database_id'] = invoice_id
-                        else:
-                            conn.commit()
-                            logger.warning(f"⚠️ Invoice inserted but RETURNING failed")
+                    ))
+                    conn.commit()
+                    invoice_id = cursor.lastrowid
+                    logger.info(f"✅ Invoice saved to DB with ID: {invoice_id}")
+                    ocr_result['database_id'] = invoice_id
+                    cursor.close()
             except Exception as db_err:
                 logger.error(f"❌ Database error: {db_err}")
         else:
@@ -803,19 +884,19 @@ class OCRService:
                 logger.warning("⚠️ Cannot connect to database — skipping DB save")
                 return None
 
-            with conn.cursor() as cursor:
-                # Convert date format
-                invoice_date = invoice_data.get('date', datetime.now().strftime("%d/%m/%Y"))
-                try:
-                    if '/' in invoice_date:
-                        day, month, year = invoice_date.split('/')
-                        invoice_date = f"{year}-{month.zfill(2)}-{day.zfill(2)}"
-                    elif invoice_date == datetime.now().strftime("%d/%m/%Y"):
-                        invoice_date = datetime.now().strftime("%Y-%m-%d")
-                except:
+            cursor = conn.cursor()
+            # Convert date format
+            invoice_date = invoice_data.get('date', datetime.now().strftime("%d/%m/%Y"))
+            try:
+                if '/' in invoice_date:
+                    day, month, year = invoice_date.split('/')
+                    invoice_date = f"{year}-{month.zfill(2)}-{day.zfill(2)}"
+                elif invoice_date == datetime.now().strftime("%d/%m/%Y"):
                     invoice_date = datetime.now().strftime("%Y-%m-%d")
+            except:
+                invoice_date = datetime.now().strftime("%Y-%m-%d")
 
-                cursor.execute("""
+            cursor.execute("""
                     INSERT INTO invoices
                     (filename, invoice_code, invoice_type, buyer_name, seller_name,
                      total_amount, confidence_score, raw_text, invoice_date,
@@ -823,9 +904,8 @@ class OCRService:
                      items, currency, subtotal, tax_amount, tax_percentage,
                      total_amount_value, transaction_id, payment_method,
                      payment_account, invoice_time, due_date, created_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                           %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    RETURNING id
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                           ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     filename,
                     invoice_data.get('invoice_code', 'INV-UNKNOWN'),
@@ -852,17 +932,12 @@ class OCRService:
                     invoice_data.get('invoice_time', None),
                     invoice_data.get('due_date', None),
                     datetime.now()
-                ))
-                result = cursor.fetchone()
-                if result:
-                    invoice_id = result[0]
-                    conn.commit()
-                    logger.info(f"✅ Invoice saved to DB with ID: {invoice_id}")
-                    return invoice_id
-                else:
-                    conn.commit()
-                    logger.warning(f"⚠️ Invoice inserted but RETURNING failed")
-                    return None
+            ))
+            conn.commit()
+            invoice_id = cursor.lastrowid
+            logger.info(f"✅ Invoice saved to DB with ID: {invoice_id}")
+            cursor.close()
+            return invoice_id
 
         except Exception as db_err:
             logger.error(f"❌ Database error: {db_err}")

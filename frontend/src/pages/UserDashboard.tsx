@@ -6,6 +6,7 @@ import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { ProfileSettings } from './ProfileSettings';
 import InvoiceManagement from './InvoiceManagement';
+import { apiService } from '@/services/apiService';
 import { 
   Bell, 
   LogOut, 
@@ -80,21 +81,7 @@ export function UserDashboard({ user, onLogout, onUpdateUser }: UserDashboardPro
     setIsTyping(true);
     
     try {
-      const token = localStorage.getItem('token');
-      const response = await fetch('/api/chat', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({ message: question })
-      });
-      
-      if (!response.ok) {
-        throw new Error('Chat API failed');
-      }
-      
-      const data = await response.json();
+      const data = await apiService.sendChatMessage(question);
       
       setIsTyping(false);
       addBotMessage(data.response);
@@ -299,46 +286,19 @@ export function UserDashboard({ user, onLogout, onUpdateUser }: UserDashboardPro
     setIsTyping(true);
     
     try {
-      // Call real backend API
-      const formData = new FormData();
-      if (uploadedFile) {
-        formData.append('file', uploadedFile);
+      // Call real backend API using apiService
+      if (!uploadedFile) {
+        throw new Error('No file uploaded');
       }
       
-      const token = localStorage.getItem('token');
-      const response = await fetch('/api/upload', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`
-        },
-        body: formData
-      });
+      const data = await apiService.uploadInvoice(uploadedFile);
       
-      const data = await response.json();
+      // Check response format and extract invoice data
+      const invoice = data.data?.extracted_data || data.invoice || data.data;
       
-      // Check for OCR error
-      if (data.status === 'error' && data.error === 'OCR_NOT_AVAILABLE') {
-        setIsTyping(false);
-        
-        let errorMessage = `❌ **${data.message}**\n\n`;
-        errorMessage += `⚠️ **Lý do:** ${data.details.reason}\n\n`;
-        errorMessage += `🔧 **Cách khắc phục:**\n\n`;
-        data.details.instructions.forEach((instruction: string, index: number) => {
-          errorMessage += `${instruction}\n`;
-        });
-        errorMessage += `\n📥 **Link tải:** ${data.details.download_url}\n\n`;
-        errorMessage += `💡 **Lưu ý:** Sau khi cài đặt, nhớ restart backend server!`;
-        
-        addBotMessage(errorMessage);
-        
-        setIsProcessing(false);
-        return;
+      if (!invoice) {
+        throw new Error('No invoice data returned from server');
       }
-      
-      if (!response.ok) {
-        throw new Error('Upload failed');
-      }
-      const invoice = data.invoice;
       
       setIsTyping(false);
       
@@ -391,9 +351,19 @@ export function UserDashboard({ user, onLogout, onUpdateUser }: UserDashboardPro
       message += `• **Tổng cộng: ${invoice.total_amount}**\n`;
       
       // Add items if available
-      if (invoice.items && invoice.items.length > 0) {
+      let items = invoice.items;
+      if (typeof items === 'string') {
+        try {
+          items = JSON.parse(items);
+        } catch (e) {
+          console.error('Failed to parse items JSON:', e);
+          items = [];
+        }
+      }
+      
+      if (items && Array.isArray(items) && items.length > 0) {
         message += `\n📦 **Sản phẩm/Dịch vụ:**\n`;
-        invoice.items.forEach((item: any, index: number) => {
+        items.forEach((item: any, index: number) => {
           message += `${index + 1}. ${item.name || item.description || 'Không rõ'}`;
           if (item.quantity) {
             message += ` - SL: ${item.quantity}`;
@@ -458,22 +428,8 @@ export function UserDashboard({ user, onLogout, onUpdateUser }: UserDashboardPro
       setIsTyping(true);
       
       try {
-        // Call real chat API
-        const token = localStorage.getItem('token');
-        const response = await fetch('/api/chat', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
-          },
-          body: JSON.stringify({ message: userMsg })
-        });
-        
-        if (!response.ok) {
-          throw new Error('Chat API failed');
-        }
-        
-        const data = await response.json();
+        // Call real chat API using apiService
+        const data = await apiService.sendChatMessage(userMsg);
         
         // Check if it's a chat command first
         const isCommand = await handleChatCommand(userMsg);

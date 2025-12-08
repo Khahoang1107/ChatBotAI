@@ -185,21 +185,26 @@ async def health_check():
 # Register routers (new architecture)
 logger.info("Registering API routers...")
 
-# New modular routers - no prefix since routers already have /api/auth, /api/chat, etc.
-app.include_router(auth.router)
-app.include_router(chat.router)
-app.include_router(upload.router)
+# New modular routers - routers already have /api/auth, /api/chat, etc. in their prefix
+try:
+    app.include_router(auth.router)
+    logger.info("✅ Auth router registered")
+except Exception as e:
+    logger.error(f"❌ Failed to register auth router: {e}")
 
-logger.info("✅ API routers registered")
+try:
+    app.include_router(chat.router)
+    logger.info("✅ Chat router registered")
+except Exception as e:
+    logger.error(f"❌ Failed to register chat router: {e}")
 
-# Legacy routers (backward compatibility)
-if auth_api_router:
-    app.include_router(auth_api_router)
-    logger.info("✅ Legacy auth_api router registered")
+try:
+    app.include_router(upload.router)
+    logger.info("✅ Upload router registered")
+except Exception as e:
+    logger.error(f"❌ Failed to register upload router: {e}")
 
-if admin_api_router:
-    app.include_router(admin_api_router)
-    logger.info("✅ Legacy admin_api router registered")
+logger.info("✅ API routers registration completed")
 
 
 # Startup event (alternative to lifespan)

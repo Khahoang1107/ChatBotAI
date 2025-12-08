@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 import jwt
 import bcrypt
 
-router = APIRouter(tags=["authentication"])
+router = APIRouter(prefix="/api/auth", tags=["authentication"])
 
 # Mock user storage (in-memory)
 MOCK_USERS = {}
@@ -58,88 +58,124 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
 @router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
 async def register(user_data: UserRegister):
     """
-    Register new user (Mock - in-memory storage)
+    Register new user (SQLite database storage)
     """
-    # Check if user exists
-    if user_data.email in MOCK_USERS:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email already registered"
+    try:
+        import sqlite3
+        import hashlib
+        import os
+
+        # Connect to database - use absolute path
+        db_path = os.path.join(os.path.dirname(__file__), '..', 'chatbot.db')
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+
+        # Check if user exists
+        cursor.execute("SELECT id FROM users WHERE email = ?", (user_data.email,))
+        if cursor.fetchone():
+            conn.close()
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email already registered"
+            )
+
+        # Hash password
+        password_hash = hashlib.sha256(user_data.password.encode()).hexdigest()
+
+        # Create user
+        username = user_data.name or user_data.email.split("@")[0]
+        cursor.execute("""
+            INSERT INTO users (username, email, password_hash, full_name, created_at)
+            VALUES (?, ?, ?, ?, ?)
+        """, (username, user_data.email, password_hash, user_data.name, datetime.utcnow()))
+
+        user_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+
+        # Create access token
+        access_token = create_access_token(data={"sub": user_data.email, "user_id": user_id})
+
+        return TokenResponse(
+            access_token=access_token,
+            token_type="bearer",
+            user=UserInfo(
+                id=user_id,
+                email=user_data.email,
+                name=username,
+                role="user"
+            )
         )
-    
-    # Hash password
-    password_bytes = user_data.password.encode('utf-8')
-    salt = bcrypt.gensalt()
-    hashed_password = bcrypt.hashpw(password_bytes, salt).decode('utf-8')
-    
-    # Store user
-    MOCK_USERS[user_data.email] = {
-        "email": user_data.email,
-        "name": user_data.name or user_data.email.split("@")[0],
-        "hashed_password": hashed_password,
-        "role": "admin" if "admin" in user_data.email.lower() else "user",
-        "created_at": datetime.utcnow().isoformat()
-    }
-    
-    # Create token
-    access_token = create_access_token(
-        data={
-            "sub": user_data.email,
-            "role": MOCK_USERS[user_data.email]["role"]
-        }
-    )
-    
-    return {
-        "access_token": access_token,
-        "token_type": "bearer",
-        "user": {
-            "email": user_data.email,
-            "name": MOCK_USERS[user_data.email]["name"],
-            "role": MOCK_USERS[user_data.email]["role"]
-        }
-    }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Registration failed: {str(e)}"
+        )
 
 
 @router.post("/login", response_model=TokenResponse)
 async def login(credentials: UserLogin):
     """
-    Login user (Mock authentication)
+    Login user (SQLite database authentication)
     """
-    # Check if user exists
-    user = MOCK_USERS.get(credentials.email)
-    
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email or password"
+    try:
+        import sqlite3
+        import hashlib
+        import os
+
+        # Connect to database - use absolute path
+        db_path = os.path.join(os.path.dirname(__file__), '..', 'chatbot.db')
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+
+        # Get user
+        cursor.execute("SELECT id, username, email, password_hash FROM users WHERE email = ?", (credentials.email,))
+        result = cursor.fetchone()
+
+        if not result:
+            conn.close()
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid email or password"
+            )
+
+        user_id, username, email, stored_hash = result
+
+        # Verify password
+        if hashlib.sha256(credentials.password.encode()).hexdigest() != stored_hash:
+            conn.close()
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid email or password"
+            )
+
+        # Update last login
+        cursor.execute("UPDATE users SET last_login = ? WHERE id = ?", (datetime.utcnow(), user_id))
+        conn.commit()
+        conn.close()
+
+        # Create token
+        access_token = create_access_token(data={"sub": email, "user_id": user_id})
+
+        return TokenResponse(
+            access_token=access_token,
+            token_type="bearer",
+            user=UserInfo(
+                id=user_id,
+                email=email,
+                name=username,
+                role="user"
+            )
         )
-    
-    # Verify password
-    password_bytes = credentials.password.encode('utf-8')
-    hashed_bytes = user["hashed_password"].encode('utf-8')
-    if not bcrypt.checkpw(password_bytes, hashed_bytes):
+
+    except HTTPException:
+        raise
+    except Exception as e:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email or password"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Login failed: {str(e)}"
         )
-    
-    # Create token
-    access_token = create_access_token(
-        data={
-            "sub": credentials.email,
-            "role": user["role"]
-        }
-    )
-    
-    return {
-        "access_token": access_token,
-        "token_type": "bearer",
-        "user": {
-            "email": user["email"],
-            "name": user["name"],
-            "role": user["role"]
-        }
-    }
 
 
 @router.get("/me", response_model=UserResponse)

@@ -1,0 +1,60 @@
+version: '3.8'
+
+services:
+  # Backend Service
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: chatbot-backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/chatbot.db:/app/chatbot.db
+      - ./backend/uploads:/app/uploads
+      - ./database_backups:/app/database_backups
+    environment:
+      - DATABASE_URL=sqlite:///./chatbot.db
+      - SECRET_KEY=${SECRET_KEY:-your-super-secret-key-change-this}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - GOOGLE_AI_API_KEY=${GOOGLE_AI_API_KEY}
+      - PYTHONPATH=/app
+    restart: unless-stopped
+    networks:
+      - chatbot-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Frontend Service
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: chatbot-frontend
+    ports:
+      - "3001:3001"
+    depends_on:
+      - backend
+    environment:
+      - VITE_API_URL=http://localhost:8000
+    restart: unless-stopped
+    networks:
+      - chatbot-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3001"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  chatbot-network:
+    driver: bridge
+
+volumes:
+  chatbot-db:
+    driver: local
+  chatbot-uploads:
+    driver: local

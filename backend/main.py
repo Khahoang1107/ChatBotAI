@@ -65,20 +65,10 @@ except Exception as e:
     websocket_manager = None
 
 # Import chat handlers (now in backend/handlers)
-try:
-    # Temporarily disabled due to missing models
-    # from handlers.chat_handler import ChatHandler
-    # from handlers.hybrid_chat_handler import HybridChatBot
-    # from handlers.groq_chat_handler import GroqChatHandler
-    # chat_handler = ChatHandler()
-    # hybrid_chat = HybridChatBot()
-    chat_handler = None
-    hybrid_chat = None
-    logger.info("✅ Chat handlers disabled (models not available)")
-except Exception as e:
-    logger.warning(f"⚠️ Chat handlers not available: {e}")
-    chat_handler = None
-    hybrid_chat = None
+# Temporarily disabled - missing GoogleAIService and TrainingDataClient dependencies
+chat_handler = None
+hybrid_chat = None
+logger.info("⚠️ Chat handler temporarily disabled - using direct API endpoints")
 
 # Import Groq tools
 try:
@@ -179,6 +169,113 @@ if auth_router:
 if admin_router:
     app.include_router(admin_router)
     logger.info("✅ Admin router included at /api/admin")
+
+# ===================== SIMPLE CHAT ENDPOINT =====================
+
+@app.post("/api/chat")
+async def api_chat(request_body: Dict[str, Any]):
+    """
+    💬 Simple chat endpoint for frontend
+    Routes to Groq AI or simple response
+    """
+    try:
+        logger.info(f"📨 /api/chat request: {request_body}")
+        
+        # Validate request
+        if 'message' not in request_body:
+            raise HTTPException(status_code=422, detail="Missing required field: 'message'")
+        
+        message = request_body['message']
+        user_id = request_body.get('user_id', 'anonymous')
+        
+        # Try to use Groq AI if available
+        if groq_chat_handler:
+            try:
+                logger.info(f"🤖 Using Groq AI for chat: {message[:50]}...")
+                response = await groq_chat_handler.chat(message, str(user_id))
+                return JSONResponse({
+                    "response": response.get('message', ''),
+                    "message": response.get('message', ''),
+                    "type": response.get('type', 'text'),
+                    "method": response.get('method', 'groq'),
+                    "timestamp": response.get('timestamp', datetime.utcnow().isoformat()),
+                    "user_id": str(user_id)
+                })
+            except Exception as groq_error:
+                logger.warning(f"⚠️ Groq AI failed: {groq_error}, falling back to simple response")
+        
+        # Fallback: Simple intelligent response with search capability
+        message_lower = message.lower().strip()
+        
+        # Check if user is searching for invoice by code
+        # Common patterns: "PB16010051828", "INV-123", or any alphanumeric code
+        import re
+        invoice_code_pattern = r'^[A-Z0-9\-]{6,20}$'
+        if re.match(invoice_code_pattern, message.upper().strip()):
+            # User entered an invoice code, try to search
+            try:
+                search_code = message.upper().strip()
+                logger.info(f"🔍 Searching for invoice: {search_code}")
+                
+                if invoice_service:
+                    result = invoice_service.search_invoices(search_code, limit=5)
+                    invoices = result.get('data', [])
+                    
+                    if invoices:
+                        inv = invoices[0]
+                        response_text = f"✅ **Tìm thấy hóa đơn!**\n\n"
+                        response_text += f"📋 **Mã hóa đơn:** {inv.get('invoice_code', 'N/A')}\n"
+                        response_text += f"📅 **Ngày:** {inv.get('invoice_date', 'N/A')}\n"
+                        response_text += f"🏢 **Người bán:** {inv.get('seller_name', 'N/A')}\n"
+                        response_text += f"👤 **Người mua:** {inv.get('buyer_name', 'N/A')}\n"
+                        response_text += f"💰 **Tổng tiền:** {inv.get('total_amount', 'N/A')}\n"
+                        response_text += f"📂 **File:** {inv.get('filename', 'N/A')}\n"
+                        
+                        return JSONResponse({
+                            "response": response_text,
+                            "message": response_text,
+                            "type": "invoice_search",
+                            "data": invoices,
+                            "timestamp": datetime.utcnow().isoformat(),
+                            "user_id": str(user_id)
+                        })
+                    else:
+                        response_text = f"❌ Không tìm thấy hóa đơn với mã: **{search_code}**\n\nVui lòng kiểm tra lại mã hóa đơn."
+                        return JSONResponse({
+                            "response": response_text,
+                            "message": response_text,
+                            "type": "text",
+                            "timestamp": datetime.utcnow().isoformat(),
+                            "user_id": str(user_id)
+                        })
+            except Exception as search_error:
+                logger.error(f"❌ Search error: {search_error}")
+        
+        # Predefined responses
+        responses = {
+            "xin chào": "Xin chào! Tôi là trợ lý AI của Invoice Manager. Tôi có thể giúp bạn quản lý hóa đơn, trả lời câu hỏi và thực hiện các tác vụ khác. Bạn cần giúp gì?",
+            "chào": "Chào bạn! Tôi có thể giúp gì cho bạn hôm nay?",
+            "hello": "Hello! How can I help you today?",
+            "hi": "Hi there! I'm your Invoice Manager AI assistant. How can I help you?",
+            "help": "Tôi có thể giúp bạn:\n• Quản lý hóa đơn\n• Trích xuất thông tin từ ảnh hóa đơn\n• Thống kê và báo cáo\n• Trả lời câu hỏi về hóa đơn",
+            "em có thể làm gì": "Tôi có thể:\n✅ Quản lý và lưu trữ hóa đơn\n✅ Trích xuất thông tin từ ảnh (OCR)\n✅ Tìm kiếm hóa đơn theo mã\n✅ Thống kê doanh thu\n✅ Xuất báo cáo Excel/PDF\n\n💡 **Mẹo:** Nhập mã hóa đơn để tìm kiếm nhanh!",
+        }
+        
+        response_text = responses.get(message_lower, 
+            f"Tôi đã nhận được tin nhắn của bạn: '{message}'. Hiện tại Groq AI chưa được cấu hình. Vui lòng liên hệ admin để kích hoạt AI chatbot.")
+        
+        return JSONResponse({
+            "response": response_text,
+            "message": response_text,
+            "type": "text",
+            "timestamp": datetime.utcnow().isoformat(),
+            "user_id": str(user_id)
+        })
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Chat error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ===================== MODELS =====================
 
@@ -1060,6 +1157,40 @@ async def get_invoice_list(request: InvoiceListRequest):
         logger.error(f"❌ Invoice list error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/api/invoices")
+async def get_invoices(
+    time_filter: str = "all",
+    limit: int = 100,
+    search: Optional[str] = None
+):
+    """Get all invoices (main endpoint for frontend)"""
+    try:
+        if not invoice_service:
+            raise HTTPException(status_code=500, detail="Invoice service not available")
+
+        result = invoice_service.get_invoice_list(
+            time_filter=time_filter,
+            limit=limit,
+            search_query=search
+        )
+
+        # Return format expected by frontend
+        response_data = {
+            "success": True,
+            "invoices": result.get("data", []),
+            "count": result.get("count", 0),
+            "timestamp": datetime.now().isoformat()
+        }
+        logger.info(f"✅ Returning {len(result.get('data', []))} invoices to frontend")
+        return response_data
+
+    except Exception as e:
+        import traceback
+        error_detail = traceback.format_exc()
+        logger.error(f"❌ Get invoices error: {e}")
+        logger.error(f"📋 Traceback: {error_detail}")
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
 @app.get("/api/invoices/list")
 async def get_invoice_list_get(
     time_filter: str = "all",
@@ -1144,6 +1275,7 @@ async def get_invoice_statistics():
 
 # ===================== OCR ENDPOINTS =====================
 
+@app.post("/api/upload")
 @app.post("/api/ocr/camera-ocr")
 async def process_camera_ocr(
     file: UploadFile = File(...),
@@ -1154,6 +1286,8 @@ async def process_camera_ocr(
 ):
     """
     📷 Process uploaded invoice image with OCR using Tesseract
+    
+    Alias: /api/upload (for frontend compatibility)
 
     Extract: invoice_code, date, amount, buyer, seller, tax_code
     Returns: Extracted data with confidence score
